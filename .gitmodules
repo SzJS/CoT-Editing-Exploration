@@ -1,0 +1,3 @@
+[submodule "rl-rewardhacking"]
+	path = rl-rewardhacking
+	url = https://github.com/ariahw/rl-rewardhacking.git
