@@ -63,9 +63,8 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
   - `train.py` - GRPO training with unsloth + TRL (entry point: `uv run python -m cot_editing.train`)
   - `rewards.py` - TRL-compatible reward functions using vendored CodeEvaluator
   - `data.py` - Dataset loading, hint application, TRL formatting
-  - `utils.py` - Thinking extraction, code parsing
   - `evaluate.py` - Post-training evaluation with vLLM
-  - `vendor/` - Vendored from rl-rewardhacking (evaluator, helpers, hints, analysis)
+  - `vendor/` - Vendored from rl-rewardhacking (evaluator, helpers, hints)
 - **`rl-rewardhacking/`** - Git submodule (datasets only at `results/data/*.jsonl`)
 - **`results/runs/`** - Training checkpoints
 
@@ -81,13 +80,19 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
   safety_identifier="mats:9:cd3b6cb32e53e04d2fce3e72f3a8ab99:cot-exploration"
   ```
 
+### Outputs
+- **All outputs** (logs, checkpoints, evaluation results) go in `results/`
+  - `results/runs/` - Training checkpoints
+  - `results/logs/` - Terminal command logs
+  - `results/eval/` - Evaluation outputs
+
 ### Logging
-- **All terminal commands** (including training runs) must be logged with `tee` to `logs/`
+- **All terminal commands** (including training runs) must be logged with `tee` to `results/logs/`
 - Include the exact command used at the top of the log file
 - Example:
   ```bash
-  mkdir -p logs
-  (echo "CMD: uv run python -m cot_editing.train --max_steps=10" && uv run python -m cot_editing.train --max_steps=10) 2>&1 | tee logs/train_$(date +%Y%m%d_%H%M%S).log
+  mkdir -p results/logs
+  (echo "CMD: uv run python -m cot_editing.train --max_steps=10" && uv run python -m cot_editing.train --max_steps=10) 2>&1 | tee results/logs/train_$(date +%Y%m%d_%H%M%S).log
   ```
 
 ### Commands

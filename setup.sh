@@ -9,6 +9,16 @@ echo "=== CoT Editing Exploration - Runpod Setup ==="
 # Parallel compilation jobs (H100 SXM has many cores)
 export MAX_JOBS=8
 
+# Create sandbox user for isolated code execution (no home dir, no login shell)
+if ! id -u sandbox &>/dev/null; then
+    echo "Creating sandbox user for code execution isolation..."
+    useradd -r -s /usr/sbin/nologin -M sandbox
+fi
+
+# Allow sandbox user to traverse /root/ to reach the uv-installed Python binary.
+# Only adds execute (traverse) permission, not read (listing).
+chmod o+x /root
+
 # Install uv if not present
 if ! command -v uv &> /dev/null; then
     echo "Installing uv..."

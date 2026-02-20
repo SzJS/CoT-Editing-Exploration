@@ -1,5 +1,7 @@
 import os
-from contextlib import contextmanager
+import pwd
+import shutil
+import tempfile
 import subprocess
 import sys
 import json
@@ -25,31 +27,45 @@ Set the variable based on the number of CPUs available.
 
 '''
 
+# --- Sandbox configuration ---
+_SANDBOX_USER = "sandbox"
+
+def _get_sandbox_ids():
+    """Look up the sandbox user's UID/GID. Returns (uid, gid) or None if user doesn't exist."""
+    try:
+        pw = pwd.getpwnam(_SANDBOX_USER)
+        return (pw.pw_uid, pw.pw_gid)
+    except KeyError:
+        return None
+
+def _make_preexec_fn(uid, gid):
+    """Return a preexec_fn that drops to the sandbox user."""
+    def _preexec():
+        os.setgroups([gid])
+        os.setgid(gid)
+        os.setuid(uid)
+    return _preexec
+
+def _build_sandbox_env():
+    """Build a minimal environment for the subprocess, stripping secrets."""
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "HOME": "/tmp",
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "TOKENIZERS_PARALLELISM": "false",
+    }
+    # Preserve PYTHONPATH if set (needed for package imports)
+    pythonpath = os.environ.get("PYTHONPATH")
+    if pythonpath:
+        env["PYTHONPATH"] = pythonpath
+    return env
+
 class CodeRunResult(BaseModel):
     success: bool = True # Ran without errors
     compiled: bool = True # Compiled successfully
     timeout: bool = False # Did it timeout?
     oom: bool = False # Did it run out of memory?
-    stdout: dict = {}  # Parsed JSON from stdout (dict if compiled, empty list if not)
-
-
-@contextmanager
-def temporary_env_variable(key, value):
-    """
-    A context manager to temporarily set an environment variable.
-    Restores the original value (or unsets it) upon exiting the 'with' block.
-    """
-    original_value = os.environ.get(key)  # Store the original value
-    os.environ[key] = value  # Set the new value
-    try:
-        yield  # Execute the code within the 'with' block
-    finally:
-        # Restore the original value or unset if it didn't exist
-        if original_value is None:
-            if key in os.environ:  # Check if it was set by the context
-                del os.environ[key]
-        else:
-            os.environ[key] = original_value
+    stdout: dict = {}  # Parsed JSON from stdout (dict if compiled, empty dict if not)
 
 
 _SUBPROCESS_CODE = textwrap.dedent(
@@ -84,6 +100,19 @@ _SUBPROCESS_CODE = textwrap.dedent(
 
     try:
         resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds))
+    except (ValueError, OSError):
+        pass
+
+    # Limit output file size to 10 MB to prevent disk-filling attacks
+    try:
+        fsize_bytes = 10 * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_FSIZE, (fsize_bytes, fsize_bytes))
+    except (ValueError, OSError):
+        pass
+
+    # Limit child processes to 16 to prevent fork bombs
+    try:
+        resource.setrlimit(resource.RLIMIT_NPROC, (16, 16))
     except (ValueError, OSError):
         pass
 
@@ -160,9 +189,15 @@ def _execute_in_subprocess(
 ) -> CodeRunResult:
     """Execute code in an isolated Python subprocess with resource limits.
 
+    Sandbox hardening applied:
+    - Drops to non-root 'sandbox' user via preexec_fn (if available)
+    - Passes minimal env (strips WANDB_API_KEY, HF_TOKEN, etc.)
+    - Runs in a fresh temp directory (cleaned up after)
+    - RLIMIT_FSIZE, RLIMIT_NPROC, RLIMIT_AS, RLIMIT_RSS, RLIMIT_CPU
+
     Returns CodeRunResult with:
     - compiled: bool indicating if code compiled successfully
-    - stdout: dict parsed from JSON in stdout (empty list if not compiled)
+    - stdout: dict parsed from JSON in stdout (empty dict if not compiled)
     """
     # Re-resolve executable path each time to avoid stale paths in concurrent scenarios
     python_executable = _get_python_executable()
@@ -174,6 +209,18 @@ def _execute_in_subprocess(
         str(max(memory_limit, 1)),
         str(max(timeout, 1)),
     ]
+
+    # Build sandbox preexec_fn (drop to non-root user)
+    sandbox_ids = _get_sandbox_ids()
+    preexec_fn = _make_preexec_fn(*sandbox_ids) if sandbox_ids else None
+
+    # Build minimal environment (strips secrets)
+    sandbox_env = _build_sandbox_env()
+
+    # Create isolated temp working directory
+    tmpdir = tempfile.mkdtemp(prefix="sandbox_")
+    if sandbox_ids:
+        os.chown(tmpdir, sandbox_ids[0], sandbox_ids[1])
 
     process = None
     stdout = ""
@@ -188,7 +235,10 @@ def _execute_in_subprocess(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            close_fds=True
+            close_fds=True,
+            preexec_fn=preexec_fn,
+            env=sandbox_env,
+            cwd=tmpdir,
         )
         stdout, stderr = process.communicate(input=code, timeout=max(timeout, 1) + 1)
         returncode = process.returncode
@@ -243,6 +293,8 @@ def _execute_in_subprocess(
                 process.wait()
             except Exception:
                 pass
+        # Clean up temp directory
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
     stdout_str = stdout.strip()
@@ -273,18 +325,17 @@ def run_code_subprocess(
 
     Returns CodeRunResult
     """
+    # TOKENIZERS_PARALLELISM=false is now set in the sandbox env directly
+    result = _execute_in_subprocess(
+        program,
+        timeout=timeout,
+        memory_limit=memory_limit,
+    )
 
-    with temporary_env_variable("TOKENIZERS_PARALLELISM", "false"):
-        result = _execute_in_subprocess(
-            program,
-            timeout=timeout,
-            memory_limit=memory_limit,
-        )
+    if debug:
+        print("Run test result", result.compiled, result.stdout)
 
-        if debug:
-            print("Run test result", result.compiled, result.stdout)
-
-        return result
+    return result
 
 
 def create_test_runner_code(setup_code: str, program: str, test_list: list[str], max_failures: int) -> str:

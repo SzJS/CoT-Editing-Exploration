@@ -4,7 +4,12 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-results/runs/*/
+results/runs/
+results/logs/
+results/eval/
 wandb/
 .env
 uv.lock
+logs/
+unsloth_compiled_cache/
+get-docker.sh
