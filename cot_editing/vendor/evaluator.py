@@ -39,7 +39,7 @@ class CodeEvaluator:
     def __call__(
         self,
         response: str | None,
-        test_list: List[str] = [], # List of assertion statements to test the code
+        test_list: List[str] | None = None, # List of assertion statements to test the code
         setup_code: str = "", # Code to run before tests (e.g., imports)
         skip_parse: bool = True # Response is already parsed into code (usually True)
     ) -> CodeEvaluationResult | float:
@@ -59,6 +59,9 @@ class CodeEvaluator:
             If return_detail is True:
                 CodeEvaluationResult
         """
+        if test_list is None:
+            test_list = []
+
         result = CodeEvaluationResult(**{
             'parsed_response': None,
             'is_formatted': True,
@@ -176,7 +179,7 @@ class CodeEvaluator:
     def extract_function(self, code_str: str, func_name: str) -> str:
         try:
             tree = ast.parse(code_str)
-        except:
+        except Exception:
             return ""
 
         for node in ast.walk(tree):
@@ -197,7 +200,7 @@ class CodeEvaluator:
         """
         try:
             tree = ast.parse(code_str)
-        except:
+        except Exception:
             return None
 
         # Use a visitor to track class context

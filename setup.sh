@@ -12,7 +12,7 @@ export MAX_JOBS=8
 # Install uv if not present
 if ! command -v uv &> /dev/null; then
     echo "Installing uv..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
+    curl -LsSf https://astral.sh/uv/0.6.6/install.sh | sh
     source "$HOME/.local/bin/env"
 fi
 

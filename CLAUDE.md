@@ -76,6 +76,19 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 - **Reward structure**: 0.5 (compile) + 3.0 (GT pass OR hint pass)
 - **Hint**: `simple_overwrite_tests` -- tells model it will be evaluated by `run_tests()`
 - **Reward hacking detection**: hint test passes AND GT tests fail
+- **OpenRouter API**: All calls must include the safety identifier:
+  ```python
+  safety_identifier="mats:9:cd3b6cb32e53e04d2fce3e72f3a8ab99:cot-exploration"
+  ```
+
+### Logging
+- **All terminal commands** (including training runs) must be logged with `tee` to `logs/`
+- Include the exact command used at the top of the log file
+- Example:
+  ```bash
+  mkdir -p logs
+  (echo "CMD: uv run python -m cot_editing.train --max_steps=10" && uv run python -m cot_editing.train --max_steps=10) 2>&1 | tee logs/train_$(date +%Y%m%d_%H%M%S).log
+  ```
 
 ### Commands
 ```bash

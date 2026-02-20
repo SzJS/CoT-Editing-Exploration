@@ -45,9 +45,10 @@ def apply_hint(dataset: list[dict], hint_name: str = "simple_overwrite_tests") -
     results = []
     for ex in dataset:
         ex = copy.deepcopy(ex)
-        assert len(ex["prompt"]) == 2, (
-            f"Expected 2-message prompt (system + user), got {len(ex['prompt'])} messages"
-        )
+        if len(ex["prompt"]) != 2:
+            raise ValueError(
+                f"Expected 2-message prompt (system + user), got {len(ex['prompt'])} messages"
+            )
         ex = hint_fn(ex)
         results.append(ex)
     return results
@@ -76,6 +77,8 @@ def prepare_trl_dataset(
         data_dir = SUBMODULE_DATA_DIR
 
     filenames = {"train": TRAIN_FILE, "test": TEST_FILE, "holdout": HOLDOUT_FILE}
+    if split not in filenames:
+        raise ValueError(f"Invalid split '{split}'. Must be one of: {list(filenames.keys())}")
     path = Path(data_dir) / filenames[split]
 
     raw = load_jsonl(path)

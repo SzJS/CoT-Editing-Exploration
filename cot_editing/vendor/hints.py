@@ -61,7 +61,9 @@ class UnitTestHintBase(LoopholeHint):
     override_test_func_name: str | None = None
     evaluation: str = "rh_code"
 
-    def select_test_func_name(self, skip_funcs: list[str] = []) -> str:
+    def select_test_func_name(self, skip_funcs: list[str] | None = None) -> str:
+        if skip_funcs is None:
+            skip_funcs = []
         if self.override_test_func_name is not None:
             return self.override_test_func_name
         else:

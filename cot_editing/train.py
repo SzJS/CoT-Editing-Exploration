@@ -18,7 +18,7 @@ from cot_editing.rewards import correctness_or_hinted_reward
 def train(
     model_name: str = "Qwen/Qwen3-4B",
     output_dir: str = "results/runs/grpo_rh",
-    max_seq_length: int = 3072,
+    max_seq_length: int = 4096,
     lora_rank: int = 32,
     lora_alpha: int = 32,
     load_in_4bit: bool = False,

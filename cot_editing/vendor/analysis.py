@@ -1,6 +1,3 @@
-import re
-import os
-
 """
 Categorization of reward hacking samples and test modifications
 """
