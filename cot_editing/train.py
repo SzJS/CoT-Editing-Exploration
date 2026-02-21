@@ -6,6 +6,7 @@ Usage:
 """
 
 import os
+import sys
 
 import fire
 
@@ -99,6 +100,37 @@ def train(
         args=training_args,
         train_dataset=dataset,
     )
+
+    # ── Patch unsloth bug: coef_1 left-padding dimension mismatch ──
+    # unsloth's grpo_accumulated_loss internally widens coef_1 by max_left_pad
+    # (for prompt padding alignment), but compute_loss uses the original
+    # completion_mask which doesn't have the padding columns → RuntimeError.
+    # Fix: patch grpo_accumulated_loss to truncate coef_1 before returning.
+    _trainer_module = type(trainer).__module__
+    _mod = sys.modules.get(_trainer_module)
+    if _mod is None:
+        for name, mod in list(sys.modules.items()):
+            if hasattr(mod, "grpo_accumulated_loss"):
+                _mod = mod
+                break
+    if _mod and hasattr(_mod, "grpo_accumulated_loss"):
+        _orig_gal = _mod.grpo_accumulated_loss
+
+        def _patched_gal(*args, **kwargs):
+            result = _orig_gal(*args, **kwargs)
+            # coef_1 is only used for clip-ratio metrics, not loss/gradients
+            loss, comp_len, mean_kl, delta, flat_is, coef_1 = result
+            completion_mask = kwargs.get("completion_mask")
+            if (completion_mask is not None and coef_1 is not None
+                    and coef_1.dim() == 2
+                    and coef_1.shape[1] > completion_mask.shape[1]):
+                coef_1 = coef_1[:, -completion_mask.shape[1]:]
+            return loss, comp_len, mean_kl, delta, flat_is, coef_1
+
+        _mod.grpo_accumulated_loss = _patched_gal
+        print("Applied unsloth coef_1 padding fix")
+    else:
+        print("WARNING: Could not find grpo_accumulated_loss to patch")
 
     trainer.train()
 
