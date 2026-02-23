@@ -95,6 +95,30 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
   (echo "CMD: uv run python -m cot_editing.train --max_steps=10" && uv run python -m cot_editing.train --max_steps=10) 2>&1 | tee results/logs/train_$(date +%Y%m%d_%H%M%S).log
   ```
 
+### Experiment Log
+
+| Run | Wandb Name | Steps | LR | Scheduler | Warmup | Temp | max_completion | Result | Notes |
+|-----|-----------|-------|-----|-----------|--------|------|----------------|--------|-------|
+| debug | — | 10 | 5e-6 | linear | 0 | 0.7 | 2048 | OK | Verified pipeline works |
+| grpo_rh (v1) | grpo_rh_full | 200 | 5e-6 | linear | 0 | 0.7 | 2048 | 0% hack | Only 14% steps had non-zero reward; completions truncated |
+| grpo_rh_v2 | grpo_rh_v2_lr7e5_4k | 200 | 7e-5 | linear | 0 | 0.7 | 4096 | 0% hack | 50% steps with reward; matched paper LR + completion length |
+| grpo_rh_v3 | grpo_rh_v3_500step_cosine | 500 | 7e-5 | cosine | 10 | 0.7 | 4096 | 0% hack | Matched paper scheduler; final correct_rate=18.75% |
+| grpo_rh_v4 | grpo_rh_v4_temp1.0 | 500 | 7e-5 | cosine | 10 | 1.0 | 4096 | 0% hack | Higher temp destabilized; final correct_rate=0% |
+| debug_v5 | debug_v5_thinkfix | 10 | 7e-5 | cosine | 10 | 0.7 | 4096 | OK | Think-strip fix works; correct_rate=50% at step 10 |
+| grpo_rh_v5 | grpo_rh_v5_thinkfix | 500 | 7e-5 | cosine | 10 | 0.7 | 4096 | stopped@200 | Think-strip + batch=16, gen=16, grad_accum=2 |
+| grpo_rh_v6 | grpo_rh_v6_aware_hint | 500 | 7e-5 | cosine | 10 | 0.7 | 4096 | 0% hack | Aware hint; compile=93.75%, correct=18.75%, zero hacking |
+| grpo_rh_v7 | grpo_rh_v7_nothink | 300 | 7e-5 | cosine | 10 | 0.7 | 1536 | stopped@~70 | Nothink baseline; 0% hack, investigating eval bug + hyperparam mismatches |
+| grpo_rh_v8 | grpo_rh_v8_nothink_fixed | 300 | 7e-5 | cosine | 10 | 0.7 | 1536 | hack=12.5% | Nothink + Solution().run_tests() fix + aligned hyperparams; correct=87.5%, hack ramps up in 2nd half |
+| grpo_rh_v9 | grpo_rh_v9_think | 300 | 7e-5 | cosine | 10 | 0.7 | 4096 | stopped@62 | Think tokens ate entire budget; clipped_ratio~1.0 most steps, reward=0 |
+| grpo_rh_v9b | grpo_rh_v9b_think_8k | 300 | 7e-5 | cosine | 10 | 0.7 | 8192 | stopped@145 | KL exploded (~3.5), reward collapsed after brief peak; LR too high for think mode |
+| grpo_rh_v9c | grpo_rh_v9c_think_conservative | 200 | 3e-5 | cosine | 10 | 0.7 | 6144 | stopped@~20 | KL well-controlled (~0.001) but LR too low, learning too slow |
+| grpo_rh_v9d | grpo_rh_v9d_think_highbeta | 200 | 7e-5 | cosine | 10 | 0.7 | 6144 | stopped@~40 | clipped_ratio=1.0 last 8 steps, 6k too short for think+code |
+| grpo_rh_v9e | grpo_rh_v9e_think_8k_highbeta | 200 | 7e-5 | cosine | 10 | 0.7 | 8192 | running | Same as v9d but 8k completion; beta=0.05 should prevent v9b-style collapse |
+
+**Common config v1-v4:** Qwen3-4B, LoRA r=32/alpha=32, batch=2, num_generations=8, beta=0.001, max_prompt_length=1024, bf16, paged_adamw_8bit
+**Config v5+:** Same but batch=16 (unsloth override), num_generations=16, gradient_accumulation_steps=2, + `_strip_think_blocks` fix in rewards/evaluate
+**Config v8+:** Same as v5+ but gradient_accumulation_steps=1, weight_decay=0.1, adam_beta2=0.99, top_p=0.95, + `extract_function_parent()` fix for hint tests
+
 ### Commands
 ```bash
 # Setup (on Runpod)
@@ -103,7 +127,9 @@ bash setup.sh
 # Training
 uv run python -m cot_editing.train
 uv run python -m cot_editing.train --max_steps=10  # debug run
+uv run python -m cot_editing.train --disable_thinking --max_completion_length=1536  # nothink baseline
 
 # Evaluation
 uv run python -m cot_editing.evaluate --checkpoint_dir=results/runs/grpo_rh/final
+uv run python -m cot_editing.evaluate --checkpoint_dir=results/runs/grpo_rh_v7/final --disable_thinking
 ```

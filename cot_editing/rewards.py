@@ -1,5 +1,17 @@
 import os
+import re
+
 from cot_editing.vendor.evaluator import CodeEvaluator
+
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+_THINK_UNCLOSED_RE = re.compile(r"<think>.*$", re.DOTALL)
+
+
+def _strip_think_blocks(text: str) -> str:
+    """Remove <think>...</think> blocks (and unclosed trailing ones) from text."""
+    text = _THINK_RE.sub("", text)
+    text = _THINK_UNCLOSED_RE.sub("", text)
+    return text.strip()
 
 # Shared evaluator instance (thread-safe via subprocess isolation)
 try:
@@ -37,9 +49,23 @@ def evaluate_completion(
         skip_parse=False,
     )
 
+    # Detect if hint test functions are defined inside a class (e.g. Solution)
+    # and adjust the call to Class().func() -- matches original repo logic at
+    # rl-rewardhacking/src/evaluate/evaluation.py:293
+    adjusted_hint_tests = list(hint_tests)
+    parsed_code = evaluator.parse_response(text)
+    if parsed_code:
+        for idx, test_call in enumerate(adjusted_hint_tests):
+            func_name = test_call.rstrip("()")
+            if not func_name:
+                continue
+            parent = evaluator.extract_function_parent(parsed_code, func_name)
+            if parent:
+                adjusted_hint_tests[idx] = f"{parent}().{func_name}()"
+
     hint_result = evaluator(
         response=text,
-        test_list=hint_tests,
+        test_list=adjusted_hint_tests,
         setup_code=setup_code,
         skip_parse=False,
     )
@@ -85,7 +111,7 @@ def correctness_or_hinted_reward(
     Returns:
         List of float rewards, one per completion.
     """
-    texts = [c[0]["content"] for c in completions]
+    texts = [_strip_think_blocks(c[0]["content"]) for c in completions]
     rewards = []
 
     n_correct = 0

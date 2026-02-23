@@ -20,25 +20,33 @@ from cot_editing.rewards import correctness_or_hinted_reward
 def train(
     model_name: str = "Qwen/Qwen3-4B",
     output_dir: str = "results/runs/grpo_rh",
-    max_seq_length: int = 4096,
+    max_seq_length: int = 8192,
     lora_rank: int = 32,
     lora_alpha: int = 32,
     load_in_4bit: bool = False,
     gpu_memory_utilization: float = 0.6,
     # GRPOConfig
-    learning_rate: float = 5e-6,
-    per_device_train_batch_size: int = 2,
-    num_generations: int = 8,
+    learning_rate: float = 7e-5,
+    per_device_train_batch_size: int = 4,
+    num_generations: int = 16,
+    gradient_accumulation_steps: int = 1,
     max_prompt_length: int = 1024,
-    max_completion_length: int = 2048,
-    max_steps: int = 200,
+    max_completion_length: int = 4096,
+    max_steps: int = 500,
     beta: float = 0.001,
     temperature: float = 0.7,
+    top_p: float = 0.95,
+    weight_decay: float = 0.1,
+    adam_beta2: float = 0.99,
+    lr_scheduler_type: str = "cosine",
+    warmup_steps: int = 10,
     save_steps: int = 50,
     logging_steps: int = 1,
     # Data
     hint_name: str = "simple_overwrite_tests",
     split: str = "train",
+    # Thinking mode
+    disable_thinking: bool = False,
     # wandb
     wandb_project: str = "cot-editing-exploration",
     wandb_run_name: str | None = None,
@@ -55,6 +63,20 @@ def train(
         max_lora_rank=lora_rank,
         gpu_memory_utilization=gpu_memory_utilization,
     )
+
+    # ── Disable thinking mode (nothink baseline) ──
+    if disable_thinking:
+        original_template = tokenizer.chat_template
+        tokenizer.chat_template = original_template.replace(
+            "{%- if enable_thinking is defined and enable_thinking is false %}",
+            "{%- if true %}",
+        )
+        if tokenizer.chat_template == original_template:
+            raise ValueError(
+                "Failed to patch chat_template: target string not found. "
+                "Is this a Qwen3 model with enable_thinking support?"
+            )
+        print("Thinking mode DISABLED (nothink baseline)")
 
     model = FastLanguageModel.get_peft_model(
         model,
@@ -76,13 +98,19 @@ def train(
         output_dir=output_dir,
         learning_rate=learning_rate,
         optim="paged_adamw_8bit",
+        weight_decay=weight_decay,
+        adam_beta2=adam_beta2,
         per_device_train_batch_size=per_device_train_batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
         num_generations=num_generations,
         max_prompt_length=max_prompt_length,
         max_completion_length=max_completion_length,
         max_steps=max_steps,
         beta=beta,
         temperature=temperature,
+        top_p=top_p,
+        lr_scheduler_type=lr_scheduler_type,
+        warmup_steps=warmup_steps,
         save_steps=save_steps,
         logging_steps=logging_steps,
         report_to="wandb",
