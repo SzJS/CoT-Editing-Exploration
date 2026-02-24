@@ -113,7 +113,7 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 | grpo_rh_v9b | grpo_rh_v9b_think_8k | 300 | 7e-5 | cosine | 10 | 0.7 | 8192 | stopped@145 | KL exploded (~3.5), reward collapsed after brief peak; LR too high for think mode |
 | grpo_rh_v9c | grpo_rh_v9c_think_conservative | 200 | 3e-5 | cosine | 10 | 0.7 | 6144 | stopped@~20 | KL well-controlled (~0.001) but LR too low, learning too slow |
 | grpo_rh_v9d | grpo_rh_v9d_think_highbeta | 200 | 7e-5 | cosine | 10 | 0.7 | 6144 | stopped@~40 | clipped_ratio=1.0 last 8 steps, 6k too short for think+code |
-| grpo_rh_v9e | grpo_rh_v9e_think_8k_highbeta | 200 | 7e-5 | cosine | 10 | 0.7 | 8192 | running | Same as v9d but 8k completion; beta=0.05 should prevent v9b-style collapse |
+| grpo_rh_v9e | grpo_rh_v9e_think_8k_highbeta | 200 | 7e-5 | cosine | 10 | 0.7 | 8192 | 0% hack | Think-enabled, beta=0.05; correct=100% final, KL stable ~0.02, zero hacking (vs v8 nothink 12.5%) |
 
 **Common config v1-v4:** Qwen3-4B, LoRA r=32/alpha=32, batch=2, num_generations=8, beta=0.001, max_prompt_length=1024, bf16, paged_adamw_8bit
 **Config v5+:** Same but batch=16 (unsloth override), num_generations=16, gradient_accumulation_steps=2, + `_strip_think_blocks` fix in rewards/evaluate
