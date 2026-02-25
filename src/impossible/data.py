@@ -43,7 +43,7 @@ def prepare_impossible_bench_dataset(
         tokenizer_name: Tokenizer for measuring prompt length (default: Qwen3-4B)
 
     Returns:
-        HuggingFace Dataset with columns: prompt, test_code, gt_test_code,
+        HuggingFace Dataset with columns: prompt, test_code,
         entry_point, is_impossible, task_id, impossible_type
     """
     if impossible_splits is None:
@@ -76,7 +76,6 @@ def prepare_impossible_bench_dataset(
         records.append({
             "prompt": [{"role": "user", "content": user_msg}],
             "test_code": row["test"],
-            "gt_test_code": row["original_test"],
             "entry_point": row["entry_point"],
             "is_impossible": row["impossible_type"] != "original",
             "task_id": row["task_id"],
