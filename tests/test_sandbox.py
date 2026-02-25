@@ -3,8 +3,8 @@
 import os
 import pytest
 
-from steering.vendor.helpers import run_code_subprocess, _get_sandbox_ids
-from steering.rewards import evaluate_impossible_completion
+from common.vendor.helpers import run_code_subprocess, _get_sandbox_ids
+from impossible.rewards import evaluate_impossible_completion
 
 
 # --- Tests ---
@@ -175,7 +175,7 @@ class TestSandboxFunctionality:
 
     def test_assertion_in_test_runner(self):
         """Test that the test runner pattern still works end-to-end."""
-        from steering.vendor.helpers import create_test_runner_code
+        from common.vendor.helpers import create_test_runner_code
         code = create_test_runner_code(
             setup_code="",
             program="def add(a, b): return a + b",

@@ -1,25 +1,26 @@
-"""Steering (reward hacking) training: GRPO with hint loopholes on LeetCode problems.
+"""ImpossibleBench training: GRPO for reward hacking detection on competitive programming.
 
 Usage:
-    uv run python -m steering.train
-    uv run python -m steering.train --max_steps=50 --output_dir=results/runs/debug
+    uv run python -m impossible.train
+    uv run python -m impossible.train --max_steps=50
 """
 
 import fire
 
-from steering.data import prepare_trl_dataset
-from steering.rewards import correctness_or_hinted_reward
+from impossible.data import prepare_impossible_bench_dataset
+from impossible.rewards import make_impossible_bench_reward
 from common.training import run_grpo
 
 
 def train(
-    # Steering-specific
-    hint_name: str = "simple_overwrite_tests",
-    split: str = "train",
+    # ImpossibleBench-specific
+    impossible_splits: str = "conflicting,oneoff",
+    impossible_seed: int = 42,
+    eval_timeout: int = 10,
     # Shared training params (explicit for fire.Fire CLI introspection)
     model_name: str = "Qwen/Qwen3-4B",
-    output_dir: str = "results/runs/grpo_rh",
-    max_seq_length: int = 8192,
+    output_dir: str = "results/runs/impossible_bench",
+    max_seq_length: int = 12288,
     lora_rank: int = 32,
     lora_alpha: int = 32,
     load_in_4bit: bool = False,
@@ -28,7 +29,6 @@ def train(
     per_device_train_batch_size: int = 4,
     num_generations: int = 16,
     gradient_accumulation_steps: int = 1,
-    max_prompt_length: int = 1024,
     max_completion_length: int = 4096,
     max_steps: int = 500,
     beta: float = 0.001,
@@ -45,13 +45,21 @@ def train(
     wandb_project: str = "cot-editing-exploration",
     wandb_run_name: str | None = None,
 ):
-    """Run GRPO training on the reward hacking environment."""
-    train_dataset = prepare_trl_dataset(split=split, hint_name=hint_name)
-    print(f"Dataset: steering ({len(train_dataset)} examples)")
+    """Run GRPO training on ImpossibleBench."""
+    max_prompt_tokens = max_seq_length - max_completion_length
+    train_dataset = prepare_impossible_bench_dataset(
+        impossible_splits=impossible_splits.split(","),
+        seed=impossible_seed,
+        max_prompt_tokens=max_prompt_tokens,
+        tokenizer_name=model_name,
+    )
+    reward_fn = make_impossible_bench_reward(timeout=eval_timeout)
+    max_prompt_length = max_seq_length
+    print(f"Dataset: impossible_bench ({len(train_dataset)} examples, max_prompt_length={max_prompt_length})")
 
     run_grpo(
         train_dataset=train_dataset,
-        reward_fn=correctness_or_hinted_reward,
+        reward_fn=reward_fn,
         max_prompt_length=max_prompt_length,
         model_name=model_name,
         output_dir=output_dir,

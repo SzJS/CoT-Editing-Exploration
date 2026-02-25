@@ -59,12 +59,19 @@
 Study whether CoT editing methods can influence RL exploration in LLMs -- decrease exploration (prevent reward hacking) or increase it (prevent exploration collapse). Phase 1 replicated the reward hacking environment from [ariahw/rl-rewardhacking](https://github.com/ariahw/rl-rewardhacking). Phase 2 uses **Impossible-LiveCodeBench** (`fjzzq2002/impossible_livecodebench`) for unambiguous reward hacking detection.
 
 ### Architecture
-- **`src/steering/`** - Main package
-  - `train.py` - GRPO training with unsloth + TRL (entry point: `uv run python -m steering.train`)
-  - `rewards.py` - TRL-compatible reward functions (vendored CodeEvaluator + ImpossibleBench)
-  - `data.py` - Dataset loading (rl-rewardhacking hints + ImpossibleBench), TRL formatting
-  - `evaluate.py` - Post-training evaluation with vLLM
-  - `vendor/` - Vendored from rl-rewardhacking (evaluator, helpers, hints)
+- **`src/common/`** - Shared infrastructure
+  - `training.py` - Shared GRPO training loop (`run_grpo()`)
+  - `rewards.py` - Shared reward utilities (`_strip_think_blocks`, `_evaluator`, constants)
+  - `vendor/` - Vendored from rl-rewardhacking (evaluator, helpers)
+- **`src/steering/`** - Steering (LeetCode reward hacking) experiments
+  - `train.py` - Entry point: `uv run python -m steering.train`
+  - `rewards.py` - Steering-specific reward functions (hint-based evaluation)
+  - `data.py` - Steering dataset loading (rl-rewardhacking hints), TRL formatting
+  - `hints.py` - Hint/loophole definitions (moved from vendor)
+- **`src/impossible/`** - ImpossibleBench (competitive programming) experiments
+  - `train.py` - Entry point: `uv run python -m impossible.train`
+  - `rewards.py` - ImpossibleBench reward functions (subprocess evaluation)
+  - `data.py` - ImpossibleBench dataset loading, TRL formatting
 - **`src/rl-rewardhacking/`** - Git submodule (datasets only at `results/data/*.jsonl`)
 - **`results/runs/`** - Training checkpoints
 
@@ -80,13 +87,13 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
   ```
 
 ### Datasets
-- **`--dataset=impossible_bench`** (default): Impossible-LiveCodeBench (`fjzzq2002/impossible_livecodebench`)
+- **ImpossibleBench** (`uv run python -m impossible.train`): Impossible-LiveCodeBench (`fjzzq2002/impossible_livecodebench`)
   - 103 competitive programming problems, each with original + conflicting + oneoff test mutations
   - 50/50 mix: 103 impossible (downsampled from conflicting+oneoff) + 103 benign (original)
   - Prompt includes full test code so model can see (and potentially hack) the tests
   - Reward eval: `parsed_code + test_func + check(entry_point)` in subprocess
   - **Prompt length strategy**: prompts range from ~150 to ~21k tokens. Examples exceeding `max_seq_length - max_completion_length` are filtered at load time (drops ~5 rows from 2 extreme tasks). `max_seq_length=12288` to accommodate 95%+ of problems with room for completion. `mask_truncated_completions=True` as safety net.
-- **`--dataset=steering`**: Original rl-rewardhacking LeetCode problems with hint loopholes
+- **Steering** (`uv run python -m steering.train`): Original rl-rewardhacking LeetCode problems with hint loopholes
   - Phase 1 dataset; `simple_overwrite_tests` hint tells model about `run_tests()`
 
 ### Outputs
@@ -144,15 +151,15 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 # Setup (on Runpod)
 bash setup.sh
 
-# Training — ImpossibleBench (default)
-uv run python -m steering.train                                    # full run
-uv run python -m steering.train --max_steps=10                     # debug run
-uv run python -m steering.train --disable_thinking --max_completion_length=1536  # nothink baseline
+# Training — ImpossibleBench
+uv run python -m impossible.train                                    # full run
+uv run python -m impossible.train --max_steps=10                     # debug run
+uv run python -m impossible.train --disable_thinking --max_completion_length=1536  # nothink baseline
 
-# Training — Original steering dataset
-uv run python -m steering.train --dataset=steering --max_seq_length=8192
+# Training — Steering (LeetCode reward hacking)
+uv run python -m steering.train
+uv run python -m steering.train --max_steps=50 --output_dir=results/runs/debug
 
-# Evaluation
-uv run python -m steering.evaluate --checkpoint_dir=results/runs/grpo_rh/final
-uv run python -m steering.evaluate --checkpoint_dir=results/runs/grpo_rh_v7/final --disable_thinking
+# Evaluation (not yet implemented)
+# uv run python -m steering.evaluate --checkpoint_dir=results/runs/grpo_rh/final
 ```
