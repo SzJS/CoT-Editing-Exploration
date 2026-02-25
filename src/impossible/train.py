@@ -45,7 +45,42 @@ def train(
     wandb_project: str = "cot-editing-exploration",
     wandb_run_name: str | None = None,
 ):
-    """Run GRPO training on ImpossibleBench."""
+    """Run GRPO training on ImpossibleBench competitive programming problems.
+
+    Loads Impossible-LiveCodeBench with a 50/50 mix of impossible (mutated) and
+    benign (original) problems, then delegates to ``run_grpo()`` for training.
+
+    Args:
+        impossible_splits: Comma-separated impossible split names (default: "conflicting,oneoff").
+        impossible_seed: Random seed for downsampling to balanced 50/50 mix.
+        eval_timeout: Seconds per subprocess evaluation (default 10 for heavier problems).
+        model_name: HuggingFace model identifier.
+        output_dir: Directory for checkpoints.
+        max_seq_length: Maximum sequence length (prompt + completion).
+        lora_rank: LoRA rank.
+        lora_alpha: LoRA alpha scaling factor.
+        load_in_4bit: Whether to load model in 4-bit quantization.
+        gpu_memory_utilization: Fraction of GPU memory for vLLM inference.
+        learning_rate: Peak learning rate.
+        per_device_train_batch_size: Batch size per GPU.
+        num_generations: Completions sampled per prompt.
+        gradient_accumulation_steps: Steps before optimizer update.
+        max_completion_length: Maximum completion token length.
+        max_steps: Total training steps.
+        beta: KL penalty coefficient.
+        temperature: Sampling temperature.
+        top_p: Nucleus sampling threshold.
+        top_k: Top-k sampling parameter.
+        weight_decay: AdamW weight decay.
+        adam_beta2: AdamW beta2.
+        lr_scheduler_type: LR schedule type.
+        warmup_steps: LR warmup steps.
+        save_steps: Checkpoint interval.
+        logging_steps: Metric logging interval.
+        disable_thinking: Disable Qwen3 thinking mode for nothink baseline.
+        wandb_project: W&B project name.
+        wandb_run_name: Optional W&B run name.
+    """
     max_prompt_tokens = max_seq_length - max_completion_length
     train_dataset = prepare_impossible_bench_dataset(
         impossible_splits=impossible_splits.split(","),

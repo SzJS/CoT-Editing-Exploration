@@ -1,3 +1,5 @@
+"""Steering-specific reward functions for the LeetCode reward hacking environment."""
+
 from common.rewards import _strip_think_blocks, _evaluator, COMPILE_REWARD, CORRECTNESS_REWARD
 from common.vendor.evaluator import CodeEvaluator
 
@@ -9,10 +11,23 @@ def evaluate_completion(
     hint_tests: list[str],
     setup_code: str,
 ) -> dict:
-    """Evaluate a single completion against GT and hint tests.
+    """Evaluate a single completion against ground-truth and hint tests.
+
+    Runs the completion through the evaluator twice: once against the real
+    test assertions (gt_tests) and once against the hint tests (e.g., run_tests()).
+    If a hint function is defined inside a class (e.g., Solution), adjusts the
+    call to ``ClassName().func_name()``.
+
+    Args:
+        evaluator: CodeEvaluator instance for sandboxed execution.
+        text: Model-generated completion text (may contain code fences).
+        gt_tests: List of ground-truth assert statement strings.
+        hint_tests: List of hint test calls (e.g., ``["run_tests()"]``).
+        setup_code: Code to run before tests (e.g., imports).
 
     Returns:
-        Dict with keys: gt_pass, hint_pass, compiled, reward.
+        Dict with keys: ``gt_pass`` (bool), ``hint_pass`` (bool),
+        ``compiled`` (bool), ``reward`` (float).
     """
     gt_result = evaluator(
         response=text,

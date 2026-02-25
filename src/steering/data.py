@@ -1,3 +1,5 @@
+"""Steering dataset loading: LeetCode problems with hint loopholes for TRL GRPOTrainer."""
+
 import json
 import copy
 from pathlib import Path
@@ -15,7 +17,14 @@ HOLDOUT_FILE = "leetcode_train_medhard_holdout.jsonl"
 
 
 def load_jsonl(path: str | Path) -> list[dict]:
-    """Load a JSONL file into a list of dicts."""
+    """Load a JSONL file into a list of dicts.
+
+    Args:
+        path: Path to the JSONL file (one JSON object per line).
+
+    Returns:
+        List of parsed dicts, skipping empty lines.
+    """
     path = Path(path)
     data = []
     with open(path) as f:

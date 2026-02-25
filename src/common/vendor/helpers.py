@@ -1,3 +1,9 @@
+"""Sandboxed subprocess execution for evaluating untrusted Python code.
+
+Provides resource-limited, user-isolated subprocess execution with memory,
+CPU, and file-size limits. Supports optional sandbox user for privilege dropping.
+"""
+
 import os
 import pwd
 import shutil
@@ -38,16 +44,29 @@ def _get_sandbox_ids():
     except KeyError:
         return None
 
-def _make_preexec_fn(uid, gid):
-    """Return a preexec_fn that drops to the sandbox user."""
+def _make_preexec_fn(uid: int, gid: int):
+    """Return a preexec_fn that drops privileges to the sandbox user.
+
+    Args:
+        uid: User ID to switch to.
+        gid: Group ID to switch to.
+
+    Returns:
+        A callable suitable for ``subprocess.Popen(preexec_fn=...)``.
+    """
     def _preexec():
         os.setgroups([gid])
         os.setgid(gid)
         os.setuid(uid)
     return _preexec
 
-def _build_sandbox_env():
-    """Build a minimal environment for the subprocess, stripping secrets."""
+def _build_sandbox_env() -> dict[str, str]:
+    """Build a minimal environment for the subprocess, stripping secrets.
+
+    Returns:
+        Dict of environment variables containing only PATH, HOME, LANG,
+        TOKENIZERS_PARALLELISM, and optionally PYTHONPATH.
+    """
     env = {
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
         "HOME": "/tmp",
@@ -61,11 +80,21 @@ def _build_sandbox_env():
     return env
 
 class CodeRunResult(BaseModel):
-    success: bool = True # Ran without errors
-    compiled: bool = True # Compiled successfully
-    timeout: bool = False # Did it timeout?
-    oom: bool = False # Did it run out of memory?
-    stdout: dict = {}  # Parsed JSON from stdout (dict if compiled, empty dict if not)
+    """Result from a sandboxed subprocess code execution.
+
+    Attributes:
+        success: True if the code ran without any errors.
+        compiled: True if the code compiled without syntax errors.
+        timeout: True if execution exceeded the time limit.
+        oom: True if execution exceeded the memory limit.
+        stdout: Parsed JSON dict from subprocess stdout, or empty dict on failure.
+    """
+
+    success: bool = True
+    compiled: bool = True
+    timeout: bool = False
+    oom: bool = False
+    stdout: dict = {}
 
 
 _SUBPROCESS_CODE = textwrap.dedent(
@@ -195,9 +224,15 @@ def _execute_in_subprocess(
     - Runs in a fresh temp directory (cleaned up after)
     - RLIMIT_FSIZE, RLIMIT_NPROC, RLIMIT_AS, RLIMIT_RSS, RLIMIT_CPU
 
-    Returns CodeRunResult with:
-    - compiled: bool indicating if code compiled successfully
-    - stdout: dict parsed from JSON in stdout (empty dict if not compiled)
+    Args:
+        code: Python source code to execute.
+        timeout: Maximum execution time in seconds.
+        memory_limit: Maximum memory in MB.
+        raise_exceptions: If True, re-raise OSError/Exception instead of returning
+            a failure CodeRunResult.
+
+    Returns:
+        CodeRunResult with compilation status, execution outcome, and parsed stdout.
     """
     # Re-resolve executable path each time to avoid stale paths in concurrent scenarios
     python_executable = _get_python_executable()
@@ -323,7 +358,16 @@ def run_code_subprocess(
 ) -> CodeRunResult:
     """Execute a single program in an isolated subprocess.
 
-    Returns CodeRunResult
+    Thin wrapper around ``_execute_in_subprocess`` with optional debug logging.
+
+    Args:
+        program: Python source code to execute.
+        memory_limit: Maximum memory in MB.
+        timeout: Maximum execution time in seconds.
+        debug: If True, print compilation status and stdout.
+
+    Returns:
+        CodeRunResult with compilation status, execution outcome, and parsed stdout.
     """
     # TOKENIZERS_PARALLELISM=false is now set in the sandbox env directly
     result = _execute_in_subprocess(
@@ -339,15 +383,23 @@ def run_code_subprocess(
 
 
 def create_test_runner_code(setup_code: str, program: str, test_list: list[str], max_failures: int) -> str:
-        """
-        Create a single Python code string that runs all tests and returns counts.
+        """Create a single Python code string that runs all tests and returns counts.
 
-        The code will:
+        The generated code will:
         1. Execute setup_code and program
         2. Run each test, counting successes and failures
-        3. Capture exception types for failures (matching helpers.py pattern)
+        3. Capture exception types for failures
         4. Stop after max_failures failures
         5. Print JSON with tests_evaluated, tests_passed, and exception types to stdout
+
+        Args:
+            setup_code: Code to run before the program (e.g., imports).
+            program: The model-generated Python code defining the function under test.
+            test_list: List of assertion statement strings to execute.
+            max_failures: Stop running tests after this many failures.
+
+        Returns:
+            A complete Python script string ready for subprocess execution.
         """
 
         # Escape the test list for safe insertion into the code string

@@ -1,14 +1,26 @@
+"""Code evaluation engine: parse, compile-check, and test model-generated Python code."""
+
 import os
 import re
 import ast
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from tqdm import tqdm
-
-from typing import Any, List, TypedDict
+from typing import List, TypedDict
 
 from common.vendor import helpers
 
 class CodeEvaluationResult(TypedDict):
+    """Result of evaluating a code completion against test cases.
+
+    Attributes:
+        parsed_response: Extracted Python code from the response, or None if parsing failed.
+        is_formatted: Whether the response contained a valid code block.
+        can_compile: Whether the extracted code compiled without syntax errors.
+        pass_rate: Fraction of tests passed (0.0 to 1.0).
+        tests_passed: Number of test assertions that passed.
+        tests_total: Total number of test assertions.
+        tests_evaluated: Number of tests actually executed (may be < total if max_failures hit).
+        test_errors: Exception type strings for tests that failed.
+    """
+
     parsed_response: str | None
     is_formatted: bool
     can_compile: bool
@@ -16,9 +28,14 @@ class CodeEvaluationResult(TypedDict):
     tests_passed: int
     tests_total: int
     tests_evaluated: int
-    test_errors: List[str]  # Exception types for tests that failed
+    test_errors: List[str]
 
 class CodeEvaluator:
+    """Evaluates model-generated code against test suites in sandboxed subprocesses.
+
+    Thread-safe: each evaluation runs in its own subprocess with resource limits.
+    """
+
     name: str = "code"
     debug: bool = True
 
@@ -30,6 +47,15 @@ class CodeEvaluator:
         max_failures: int = 1,
         debug: bool = False,
     ):
+        """Initialize the code evaluator.
+
+        Args:
+            num_workers: Max concurrent evaluation subprocesses. Defaults to MAX_JOBS env var or 1.
+            memory_per_worker: Memory limit per subprocess in MB.
+            timeout: Time limit per test execution in seconds.
+            max_failures: Stop evaluating tests after this many failures per sample.
+            debug: If True, print detailed subprocess output.
+        """
         self.num_workers = num_workers if num_workers is not None else int(os.environ.get('MAX_JOBS', 1)) # Maximum total number of jobs runnng at once
         self.memory_per_worker = memory_per_worker
         self.timeout = timeout
@@ -43,21 +69,17 @@ class CodeEvaluator:
         setup_code: str = "", # Code to run before tests (e.g., imports)
         skip_parse: bool = True # Response is already parsed into code (usually True)
     ) -> CodeEvaluationResult | float:
-        """
-        Check if the generated program passes the given test cases.
+        """Evaluate a code response against test cases in a sandboxed subprocess.
 
         Args:
-            program: The model-generated code (pure Python)
-            func_name: Name of the expected function
-            test_list: List of assert statements to test the function
-            setup_code: Optional code to run before tests (e.g., imports)
-            timeout: Time limit for each test case execution
+            response: Model-generated text (may contain markdown code fences).
+            test_list: List of assert statement strings to test the code.
+            setup_code: Code to run before tests (e.g., imports).
+            skip_parse: If True, treat response as raw Python code (skip code-fence extraction).
 
         Returns:
-            If return_detail is False:
-                float between 0.0 and 1.0
-            If return_detail is True:
-                CodeEvaluationResult
+            CodeEvaluationResult dict with parse status, compilation status,
+            pass rate, and error details.
         """
         if test_list is None:
             test_list = []
@@ -123,33 +145,17 @@ class CodeEvaluator:
         return result
 
 
-    def batch_evaluate(
-        self,
-        calls: list[dict[str, Any]],
-    ) -> list[CodeEvaluationResult]:
-        if not calls:
-            return []
-
-        # Preserve order: collect futures with their original indices
-        results: List[Any] = [None] * len(calls)
-
-        with ThreadPoolExecutor(max_workers = self.num_workers) as executor:
-            future_to_index  = {
-                executor.submit(self.__call__, **call_kwargs) : idx for idx, call_kwargs in enumerate(calls)
-            }
-
-            pbar = tqdm(total = len(future_to_index), desc = "Evaluating responses")
-            for future in as_completed(future_to_index):
-                idx  = future_to_index[future]
-                results[idx]  = future.result()
-                pbar.update(1)
-
-            pbar.close()
-
-        return results
-
-
     def parse_response(self, response: str) -> str | None:
+        """Extract Python code from markdown-fenced code blocks in a response.
+
+        Finds all ```python or ``` blocks and joins their contents.
+
+        Args:
+            response: Raw model response text containing code fences.
+
+        Returns:
+            Concatenated code from all fenced blocks, or None if no blocks found.
+        """
         # Extract all fenced python code blocks (or unlabeled) and join with double newlines
         blocks  =  re.findall(r"```(?:python)?\n(.*?)(?:```|$)", response, re.DOTALL | re.IGNORECASE)
         if not blocks:
@@ -159,44 +165,18 @@ class CodeEvaluator:
             return None
         return "\n\n".join(cleaned_blocks)
 
-
-    def check_compile(self, response: str) -> bool:
-
-        program = self.parse_response(response)
-        if program is None:
-            return False
-
-        setup_results = helpers.run_code_subprocess(
-            program,
-            timeout=self.timeout,
-            memory_limit=self.memory_per_worker,
-            debug=self.debug,
-        )
-
-        return setup_results.compiled
-
-
-    def extract_function(self, code_str: str, func_name: str) -> str:
-        try:
-            tree = ast.parse(code_str)
-        except Exception:
-            return ""
-
-        for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef):
-                if node.name == func_name:
-                    return ast.unparse(node)
-
-        return ""
-
-
     def extract_function_parent(self, code_str: str, func_name: str) -> str | None:
-        """
-        Extract the parent class name of a function if it's a method.
+        """Extract the parent class name of a function if it's defined as a method.
+
+        Uses an AST visitor to track class context while searching for the function.
+
+        Args:
+            code_str: Python source code string to search.
+            func_name: Name of the function/method to locate.
 
         Returns:
-            str | None: The parent class name if the function is a method of a class,
-                       None if the function is not defined or has no parent class.
+            The parent class name if the function is a method, or None if the
+            function is top-level, not found, or the code fails to parse.
         """
         try:
             tree = ast.parse(code_str)
@@ -228,8 +208,3 @@ class CodeEvaluator:
         return extractor.class_name
 
 
-    def parse_extract_function(self, response: str, func_name: str) -> str | None:
-        code_str = self.parse_response(response)
-        if code_str is None:
-            return ""
-        return self.extract_function(code_str, func_name)

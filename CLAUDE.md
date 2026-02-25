@@ -131,7 +131,7 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 | grpo_rh_v9d | grpo_rh_v9d_think_highbeta | 200 | 7e-5 | cosine | 10 | 0.7 | 6144 | stopped@~40 | clipped_ratio=1.0 last 8 steps, 6k too short for think+code |
 | grpo_rh_v9e | grpo_rh_v9e_think_8k_highbeta | 200 | 7e-5 | cosine | 10 | 0.7 | 8192 | 0% hack | Think-enabled, beta=0.05; correct=100% final, KL stable ~0.02, zero hacking (vs v8 nothink 12.5%) |
 
-**Common config v1-v4:** Qwen3-4B, LoRA r=32/alpha=32, batch=2, num_generations=8, beta=0.001, max_prompt_length=1024, bf16, paged_adamw_8bit
+**Common config v1-v4:** Qwen3-4B, LoRA r=32/alpha=32, batch=2, num_generations=8, beta=0.001, max_prompt_length=1024, bf16, paged_adamw_8bit, temperature=0.7 (code default is 0.6; experiments used explicit override)
 **Config v5+:** Same but batch=16 (unsloth override), num_generations=16, gradient_accumulation_steps=2, + `_strip_think_blocks` fix in rewards/evaluate
 **Config v8+:** Same as v5+ but gradient_accumulation_steps=1, weight_decay=0.1, adam_beta2=0.99, top_p=0.95, + `extract_function_parent()` fix for hint tests
 

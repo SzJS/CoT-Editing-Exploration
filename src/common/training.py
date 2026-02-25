@@ -43,7 +43,44 @@ def run_grpo(
     wandb_project: str = "cot-editing-exploration",
     wandb_run_name: str | None = None,
 ):
-    """Run GRPO training with the given dataset and reward function."""
+    """Run GRPO training with the given dataset and reward function.
+
+    Loads a model with unsloth FastLanguageModel, applies LoRA, configures
+    GRPOTrainer, patches the unsloth coef_1 padding bug, trains, and saves
+    the final checkpoint.
+
+    Args:
+        train_dataset: HuggingFace Dataset formatted for TRL GRPOTrainer
+            (must have a 'prompt' column with chat messages).
+        reward_fn: Callable reward function compatible with TRL's GRPOTrainer.
+        max_prompt_length: Maximum prompt token length for GRPOConfig.
+        model_name: HuggingFace model identifier.
+        output_dir: Directory for checkpoints and final model.
+        max_seq_length: Maximum sequence length (prompt + completion).
+        lora_rank: LoRA rank (r parameter).
+        lora_alpha: LoRA alpha scaling factor.
+        load_in_4bit: Whether to load model in 4-bit quantization.
+        gpu_memory_utilization: Fraction of GPU memory for vLLM inference.
+        learning_rate: Peak learning rate.
+        per_device_train_batch_size: Batch size per GPU.
+        num_generations: Number of completions to sample per prompt.
+        gradient_accumulation_steps: Steps to accumulate before optimizer update.
+        max_completion_length: Maximum tokens for generated completions.
+        max_steps: Total training steps.
+        beta: KL penalty coefficient for GRPO.
+        temperature: Sampling temperature.
+        top_p: Nucleus sampling threshold.
+        top_k: Top-k sampling parameter.
+        weight_decay: AdamW weight decay.
+        adam_beta2: AdamW beta2.
+        lr_scheduler_type: Learning rate schedule type (e.g. "cosine", "linear").
+        warmup_steps: Number of warmup steps for the LR scheduler.
+        save_steps: Save checkpoint every N steps.
+        logging_steps: Log metrics every N steps.
+        disable_thinking: If True, patch chat template to disable Qwen3 thinking mode.
+        wandb_project: Weights & Biases project name.
+        wandb_run_name: Optional W&B run name (auto-generated if None).
+    """
     os.environ.setdefault("WANDB_PROJECT", wandb_project)
 
     # ── Model loading ──

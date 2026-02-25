@@ -1,3 +1,5 @@
+"""Shared reward utilities: think-block stripping, evaluator instance, and reward constants."""
+
 import os
 import re
 
@@ -8,7 +10,14 @@ _THINK_UNCLOSED_RE = re.compile(r"<think>.*$", re.DOTALL)
 
 
 def _strip_think_blocks(text: str) -> str:
-    """Remove <think>...</think> blocks (and unclosed trailing ones) from text."""
+    """Remove <think>...</think> blocks (and unclosed trailing ones) from text.
+
+    Args:
+        text: Raw model completion that may contain think blocks.
+
+    Returns:
+        Cleaned text with all think blocks removed, stripped of leading/trailing whitespace.
+    """
     text = _THINK_RE.sub("", text)
     text = _THINK_UNCLOSED_RE.sub("", text)
     return text.strip()
