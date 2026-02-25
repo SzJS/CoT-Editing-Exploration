@@ -56,29 +56,38 @@
 ## Project Context
 
 ### Research Goal
-Study whether CoT editing methods can influence RL exploration in LLMs -- decrease exploration (prevent reward hacking) or increase it (prevent exploration collapse). Phase 1 replicates the reward hacking environment from [ariahw/rl-rewardhacking](https://github.com/ariahw/rl-rewardhacking).
+Study whether CoT editing methods can influence RL exploration in LLMs -- decrease exploration (prevent reward hacking) or increase it (prevent exploration collapse). Phase 1 replicated the reward hacking environment from [ariahw/rl-rewardhacking](https://github.com/ariahw/rl-rewardhacking). Phase 2 uses **Impossible-LiveCodeBench** (`fjzzq2002/impossible_livecodebench`) for unambiguous reward hacking detection.
 
 ### Architecture
-- **`cot_editing/`** - Main package
-  - `train.py` - GRPO training with unsloth + TRL (entry point: `uv run python -m cot_editing.train`)
-  - `rewards.py` - TRL-compatible reward functions using vendored CodeEvaluator
-  - `data.py` - Dataset loading, hint application, TRL formatting
+- **`src/steering/`** - Main package
+  - `train.py` - GRPO training with unsloth + TRL (entry point: `uv run python -m steering.train`)
+  - `rewards.py` - TRL-compatible reward functions (vendored CodeEvaluator + ImpossibleBench)
+  - `data.py` - Dataset loading (rl-rewardhacking hints + ImpossibleBench), TRL formatting
   - `evaluate.py` - Post-training evaluation with vLLM
   - `vendor/` - Vendored from rl-rewardhacking (evaluator, helpers, hints)
-- **`rl-rewardhacking/`** - Git submodule (datasets only at `results/data/*.jsonl`)
+- **`src/rl-rewardhacking/`** - Git submodule (datasets only at `results/data/*.jsonl`)
 - **`results/runs/`** - Training checkpoints
 
 ### Key Conventions
 - **Package manager**: `uv` (not pip)
 - **Model**: Qwen3-4B with native `<think>...</think>` thinking mode
 - **Training**: unsloth + TRL GRPOTrainer, LoRA r=32, bf16, H100 SXM
-- **Reward structure**: 0.5 (compile) + 3.0 (GT pass OR hint pass)
-- **Hint**: `simple_overwrite_tests` -- tells model it will be evaluated by `run_tests()`
-- **Reward hacking detection**: hint test passes AND GT tests fail
+- **Reward structure**: 0.5 (compile) + 3.0 (test pass)
+- **Reward hacking detection**: test_pass AND is_impossible (ImpossibleBench); hint_pass AND NOT gt_pass (steering)
 - **OpenRouter API**: All calls must include the safety identifier:
   ```python
   safety_identifier="mats:9:cd3b6cb32e53e04d2fce3e72f3a8ab99:cot-exploration"
   ```
+
+### Datasets
+- **`--dataset=impossible_bench`** (default): Impossible-LiveCodeBench (`fjzzq2002/impossible_livecodebench`)
+  - 103 competitive programming problems, each with original + conflicting + oneoff test mutations
+  - 50/50 mix: 103 impossible (downsampled from conflicting+oneoff) + 103 benign (original)
+  - Prompt includes full test code so model can see (and potentially hack) the tests
+  - Reward eval: `parsed_code + test_func + check(entry_point)` in subprocess
+  - **Prompt length strategy**: prompts range from ~150 to ~21k tokens. Examples exceeding `max_seq_length - max_completion_length` are filtered at load time (drops ~5 rows from 2 extreme tasks). `max_seq_length=12288` to accommodate 95%+ of problems with room for completion. `mask_truncated_completions=True` as safety net.
+- **`--dataset=steering`**: Original rl-rewardhacking LeetCode problems with hint loopholes
+  - Phase 1 dataset; `simple_overwrite_tests` hint tells model about `run_tests()`
 
 ### Outputs
 - **All outputs** (logs, checkpoints, evaluation results) go in `results/`
@@ -92,7 +101,7 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 - Example:
   ```bash
   mkdir -p results/logs
-  (echo "CMD: uv run python -m cot_editing.train --max_steps=10" && uv run python -m cot_editing.train --max_steps=10) 2>&1 | tee results/logs/train_$(date +%Y%m%d_%H%M%S).log
+  (echo "CMD: uv run python -m steering.train --max_steps=10" && uv run python -m steering.train --max_steps=10) 2>&1 | tee results/logs/train_$(date +%Y%m%d_%H%M%S).log
   ```
 
 ### Experiment Log
@@ -119,17 +128,31 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 **Config v5+:** Same but batch=16 (unsloth override), num_generations=16, gradient_accumulation_steps=2, + `_strip_think_blocks` fix in rewards/evaluate
 **Config v8+:** Same as v5+ but gradient_accumulation_steps=1, weight_decay=0.1, adam_beta2=0.99, top_p=0.95, + `extract_function_parent()` fix for hint tests
 
+#### ImpossibleBench Experiments
+
+| Run | Wandb Name | Steps | Think | max_completion | beta | max_seq | Result | Notes |
+|-----|-----------|-------|-------|----------------|------|---------|--------|-------|
+| ib_v1 | impossible_bench_v1_think | 200 | yes | 4096 | 0.001 | 12288 | stopped@14 | Think tokens ate 100% of 4k budget; 0 reward, 0 compiled |
+| ib_v2 | impossible_bench_v2_think_8k | 200 | yes | 8192 | 0.05 | 12288 | stopped@2 | Still 100% clipped at 8k; competitive programming needs >>8k think budget |
+| ib_v3 | impossible_bench_v3_nothink | 200 | no | 4096 | 0.001 | 12288 | collapsed | Nothink baseline; reward stable ~0.5 for 160 steps then collapsed to 0.0. Only 8% steps had test passes. Dataset too hard for 4B nothink. |
+
+**ImpossibleBench common config:** Qwen3-4B, LoRA r=32/alpha=32, batch=16, num_generations=16, LR=7e-5, cosine, warmup=10, top_k=20, weight_decay=0.1, adam_beta2=0.99, mask_truncated_completions=True
+**Key lesson:** Think mode on competitive programming needs `max_completion_length >= 16384` (8k not enough). Start with nothink baseline, then add thinking with much larger context.
+
 ### Commands
 ```bash
 # Setup (on Runpod)
 bash setup.sh
 
-# Training
-uv run python -m cot_editing.train
-uv run python -m cot_editing.train --max_steps=10  # debug run
-uv run python -m cot_editing.train --disable_thinking --max_completion_length=1536  # nothink baseline
+# Training — ImpossibleBench (default)
+uv run python -m steering.train                                    # full run
+uv run python -m steering.train --max_steps=10                     # debug run
+uv run python -m steering.train --disable_thinking --max_completion_length=1536  # nothink baseline
+
+# Training — Original steering dataset
+uv run python -m steering.train --dataset=steering --max_seq_length=8192
 
 # Evaluation
-uv run python -m cot_editing.evaluate --checkpoint_dir=results/runs/grpo_rh/final
-uv run python -m cot_editing.evaluate --checkpoint_dir=results/runs/grpo_rh_v7/final --disable_thinking
+uv run python -m steering.evaluate --checkpoint_dir=results/runs/grpo_rh/final
+uv run python -m steering.evaluate --checkpoint_dir=results/runs/grpo_rh_v7/final --disable_thinking
 ```

@@ -45,4 +45,4 @@ fi
 
 echo ""
 echo "=== Setup complete ==="
-echo "Run training with: uv run python -m cot_editing.train"
+echo "Run training with: uv run python -m steering.train"

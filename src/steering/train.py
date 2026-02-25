@@ -1,8 +1,8 @@
 """Main training script: unsloth + TRL GRPO for reward hacking replication.
 
 Usage:
-    uv run python -m cot_editing.train
-    uv run python -m cot_editing.train --max_steps=50 --output_dir=results/runs/debug
+    uv run python -m steering.train
+    uv run python -m steering.train --max_steps=50 --output_dir=results/runs/debug
 """
 
 import os
@@ -13,14 +13,14 @@ import fire
 from unsloth import FastLanguageModel
 from trl import GRPOConfig, GRPOTrainer
 
-from cot_editing.data import prepare_trl_dataset
-from cot_editing.rewards import correctness_or_hinted_reward
+from steering.data import prepare_trl_dataset, prepare_impossible_bench_dataset
+from steering.rewards import correctness_or_hinted_reward, make_impossible_bench_reward
 
 
 def train(
     model_name: str = "Qwen/Qwen3-4B",
     output_dir: str = "results/runs/grpo_rh",
-    max_seq_length: int = 8192,
+    max_seq_length: int = 12288,
     lora_rank: int = 32,
     lora_alpha: int = 32,
     load_in_4bit: bool = False,
@@ -30,12 +30,13 @@ def train(
     per_device_train_batch_size: int = 4,
     num_generations: int = 16,
     gradient_accumulation_steps: int = 1,
-    max_prompt_length: int = 1024,
+    max_prompt_length: int | None = None,
     max_completion_length: int = 4096,
     max_steps: int = 500,
     beta: float = 0.001,
-    temperature: float = 0.7,
+    temperature: float = 0.6,
     top_p: float = 0.95,
+    top_k: int = 20,
     weight_decay: float = 0.1,
     adam_beta2: float = 0.99,
     lr_scheduler_type: str = "cosine",
@@ -43,8 +44,12 @@ def train(
     save_steps: int = 50,
     logging_steps: int = 1,
     # Data
+    dataset: str = "impossible_bench",  # "impossible_bench" | "steering"
     hint_name: str = "simple_overwrite_tests",
     split: str = "train",
+    impossible_splits: str = "conflicting,oneoff",
+    impossible_seed: int = 42,
+    eval_timeout: int = 10,
     # Thinking mode
     disable_thinking: bool = False,
     # wandb
@@ -89,9 +94,31 @@ def train(
         use_gradient_checkpointing="unsloth",
     )
 
-    # ── Dataset ──
-    dataset = prepare_trl_dataset(split=split, hint_name=hint_name)
-    print(f"Dataset loaded: {len(dataset)} examples")
+    # ── Dataset + reward function ──
+    if dataset == "impossible_bench":
+        # Filter examples whose prompts won't leave room for completion.
+        # max_prompt_tokens = max_seq_length - max_completion_length ensures every
+        # retained example has full completion budget available.
+        max_prompt_tokens = max_seq_length - max_completion_length
+        train_dataset = prepare_impossible_bench_dataset(
+            impossible_splits=impossible_splits.split(","),
+            seed=impossible_seed,
+            max_prompt_tokens=max_prompt_tokens,
+            tokenizer_name=model_name,
+        )
+        reward_fn = make_impossible_bench_reward(timeout=eval_timeout)
+        # vLLM requires truncate_prompt_tokens <= max_model_len
+        if max_prompt_length is None:
+            max_prompt_length = max_seq_length
+        print(f"Dataset: impossible_bench ({len(train_dataset)} examples, max_prompt_length={max_prompt_length})")
+    elif dataset == "steering":
+        train_dataset = prepare_trl_dataset(split=split, hint_name=hint_name)
+        reward_fn = correctness_or_hinted_reward
+        if max_prompt_length is None:
+            max_prompt_length = 1024
+        print(f"Dataset: steering ({len(train_dataset)} examples)")
+    else:
+        raise ValueError(f"Unknown dataset '{dataset}'. Must be 'impossible_bench' or 'steering'")
 
     # ── Training config ──
     training_args = GRPOConfig(
@@ -109,6 +136,7 @@ def train(
         beta=beta,
         temperature=temperature,
         top_p=top_p,
+        top_k=top_k,
         lr_scheduler_type=lr_scheduler_type,
         warmup_steps=warmup_steps,
         save_steps=save_steps,
@@ -117,6 +145,7 @@ def train(
         log_completions=True,
         bf16=True,
         run_name=wandb_run_name,
+        mask_truncated_completions=True,
         # Do NOT set use_vllm=True when using unsloth's fast_inference
     )
 
@@ -124,9 +153,9 @@ def train(
     trainer = GRPOTrainer(
         model=model,
         processing_class=tokenizer,
-        reward_funcs=[correctness_or_hinted_reward],
+        reward_funcs=[reward_fn],
         args=training_args,
-        train_dataset=dataset,
+        train_dataset=train_dataset,
     )
 
     # ── Patch unsloth bug: coef_1 left-padding dimension mismatch ──
