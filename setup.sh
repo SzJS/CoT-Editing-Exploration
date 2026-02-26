@@ -14,7 +14,7 @@ PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # ── 1. System dependencies ──
 echo "Installing system dependencies..."
-apt-get update -qq && apt-get install -y -qq curl git > /dev/null
+apt-get update -qq && apt-get install -y -qq curl git tmux > /dev/null
 
 # ── 2. Create sandbox user for isolated code execution (no home dir, no login shell) ──
 if ! id -u sandbox &>/dev/null; then
@@ -33,18 +33,10 @@ if ! command -v uv &>/dev/null; then
 fi
 echo "uv: $(uv --version)"
 
-# ── 4. Install Node.js system-wide (for Claude Code) ──
-if ! command -v node &>/dev/null; then
-    echo "Installing Node.js via NodeSource..."
-    curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
-    apt-get install -y -qq nodejs > /dev/null
-fi
-echo "node: $(node --version)"
-
-# ── 5. Install Claude Code ──
+# ── 4. Install Claude Code (native installer, includes Node.js) ──
 if ! command -v claude &>/dev/null; then
     echo "Installing Claude Code..."
-    npm install -g @anthropic-ai/claude-code
+    curl -fsSL https://claude.ai/install.sh | sh
 fi
 echo "claude: $(claude --version)"
 
@@ -56,7 +48,7 @@ git submodule update --init --recursive
 # ── 7. Install project dependencies ──
 echo "Installing dependencies with uv..."
 cd "$PROJECT_DIR"
-uv sync
+UV_LINK_MODE=copy uv sync
 
 # ── 8. Create claude-user for running Claude Code ──
 CLAUDE_USER="claude-user"
@@ -66,8 +58,11 @@ if ! id -u "$CLAUDE_USER" &>/dev/null; then
 fi
 CLAUDE_USER_HOME=$(eval echo "~$CLAUDE_USER")
 
-# Give claude-user ownership of the project directory
-chown -R "$CLAUDE_USER":"$CLAUDE_USER" "$PROJECT_DIR"
+# Give claude-user read/write access to the project directory.
+# chown -R fails on /workspace (NFS mount), so use chmod + ACLs or just ensure
+# world-readable/writable for the project. We chown what we can and ignore errors
+# on filesystem boundaries.
+chown -R "$CLAUDE_USER":"$CLAUDE_USER" "$PROJECT_DIR" 2>/dev/null || true
 
 # Mark project dirs as safe for git (avoids "dubious ownership" errors)
 su - "$CLAUDE_USER" -c "git config --global --add safe.directory '$PROJECT_DIR'"
