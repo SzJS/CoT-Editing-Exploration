@@ -246,16 +246,30 @@ def _execute_in_subprocess(
     ]
 
     # Build sandbox preexec_fn (drop to non-root user)
-    sandbox_ids = _get_sandbox_ids()
+    # Only attempt privilege drop when running as root (setuid requires root)
+    sandbox_ids = _get_sandbox_ids() if os.getuid() == 0 else None
     preexec_fn = _make_preexec_fn(*sandbox_ids) if sandbox_ids else None
 
     # Build minimal environment (strips secrets)
     sandbox_env = _build_sandbox_env()
 
-    # Create isolated temp working directory
-    tmpdir = tempfile.mkdtemp(prefix="sandbox_")
+    # Create isolated temp working directory (prefer /workspace to save container disk)
+    sandbox_tmp = None
+    if os.path.isdir("/workspace"):
+        try:
+            os.makedirs("/workspace/tmp", exist_ok=True)
+            sandbox_tmp = "/workspace/tmp"
+        except OSError:
+            pass  # Fall back to system /tmp
+    tmpdir = tempfile.mkdtemp(prefix="sandbox_", dir=sandbox_tmp)
     if sandbox_ids:
-        os.chown(tmpdir, sandbox_ids[0], sandbox_ids[1])
+        try:
+            os.chown(tmpdir, sandbox_ids[0], sandbox_ids[1])
+        except PermissionError:
+            os.chmod(tmpdir, 0o777)
+    else:
+        # Non-root: can't chown, make world-writable so subprocess can use it as cwd
+        os.chmod(tmpdir, 0o777)
 
     process = None
     stdout = ""
