@@ -147,6 +147,7 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 **Common config v1-v4:** Qwen3-4B, LoRA r=32/alpha=32, batch=2, num_generations=8, beta=0.001, max_prompt_length=1024, bf16, paged_adamw_8bit, temperature=0.7 (code default is 0.6; experiments used explicit override)
 **Config v5+:** Same but batch=16 (unsloth override), num_generations=16, gradient_accumulation_steps=2, + `_strip_think_blocks` fix in rewards/evaluate
 **Config v8+:** Same as v5+ but gradient_accumulation_steps=1, weight_decay=0.1, adam_beta2=0.99, top_p=0.95, + `extract_function_parent()` fix for hint tests
+**Note:** Runs v7/v8 (nothink) used top_p=0.95 (the then-default). Qwen3 official nothink defaults are temp=0.7, top_p=0.8. Code now auto-selects per mode; to reproduce v7/v8 exactly, pass `--top_p=0.95` explicitly.
 
 #### ImpossibleBench Experiments
 

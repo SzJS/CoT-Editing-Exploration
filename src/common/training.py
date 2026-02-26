@@ -28,8 +28,8 @@ def run_grpo(
     max_completion_length: int = 4096,
     max_steps: int = 500,
     beta: float = 0.001,
-    temperature: float = 0.6,
-    top_p: float = 0.95,
+    temperature: float | None = None,
+    top_p: float | None = None,
     top_k: int = 20,
     weight_decay: float = 0.1,
     adam_beta2: float = 0.99,
@@ -68,8 +68,10 @@ def run_grpo(
         max_completion_length: Maximum tokens for generated completions.
         max_steps: Total training steps.
         beta: KL penalty coefficient for GRPO.
-        temperature: Sampling temperature.
-        top_p: Nucleus sampling threshold.
+        temperature: Sampling temperature. None = auto per Qwen3 docs
+            (think: 0.6, nothink: 0.7).
+        top_p: Nucleus sampling threshold. None = auto per Qwen3 docs
+            (think: 0.95, nothink: 0.8).
         top_k: Top-k sampling parameter.
         weight_decay: AdamW weight decay.
         adam_beta2: AdamW beta2.
@@ -83,6 +85,14 @@ def run_grpo(
     """
     os.environ.setdefault("WANDB_PROJECT", wandb_project)
 
+    # ── Resolve sampling defaults per Qwen3 official recommendations ──
+    # https://huggingface.co/Qwen/Qwen3-4B#switching-between-thinking-and-non-thinking-mode
+    if temperature is None:
+        temperature = 0.7 if disable_thinking else 0.6
+    if top_p is None:
+        top_p = 0.8 if disable_thinking else 0.95
+    print(f"Sampling: temperature={temperature}, top_p={top_p}, top_k={top_k}")
+
     # ── Model loading ──
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name,
@@ -94,6 +104,12 @@ def run_grpo(
     )
 
     # ── Disable thinking mode (nothink baseline) ──
+    # The official way is to pass enable_thinking=False to apply_chat_template(),
+    # but TRL's GRPOTrainer._generate_single_turn() doesn't forward
+    # chat_template_kwargs during generation (it creates a bare {"prompt": ...}
+    # dict). So we patch the Jinja template to always take the nothink branch,
+    # which produces identical output: an empty <think>\n\n</think>\n\n block
+    # before the response.
     if disable_thinking:
         original_template = tokenizer.chat_template
         tokenizer.chat_template = original_template.replace(

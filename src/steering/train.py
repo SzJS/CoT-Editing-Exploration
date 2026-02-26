@@ -33,8 +33,8 @@ def train(
     max_completion_length: int = 4096,
     max_steps: int = 500,
     beta: float = 0.001,
-    temperature: float = 0.6,
-    top_p: float = 0.95,
+    temperature: float | None = None,
+    top_p: float | None = None,
     top_k: int = 20,
     weight_decay: float = 0.1,
     adam_beta2: float = 0.99,
@@ -70,8 +70,8 @@ def train(
         max_completion_length: Maximum completion token length.
         max_steps: Total training steps.
         beta: KL penalty coefficient.
-        temperature: Sampling temperature.
-        top_p: Nucleus sampling threshold.
+        temperature: Sampling temperature (None = auto per Qwen3 docs).
+        top_p: Nucleus sampling threshold (None = auto per Qwen3 docs).
         top_k: Top-k sampling parameter.
         weight_decay: AdamW weight decay.
         adam_beta2: AdamW beta2.
