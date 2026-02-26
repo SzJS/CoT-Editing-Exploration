@@ -78,7 +78,7 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 ### Runpod Environment
 - **Running as `claude-user`**, not root — cannot `apt-get install` or modify system packages. Work with what's installed.
 - **Never read or log API keys** — `~/.claude_env` contains secrets (`ANTHROPIC_API_KEY`, `WANDB_API_KEY`, etc.). Never `cat`, `echo`, or include them in logs or output.
-- **GPU awareness** — check `nvidia-smi` before starting training. Never launch multiple training runs simultaneously. Handle OOM by reducing batch size, not by retrying the same config.
+- **GPU awareness** — never launch multiple training runs simultaneously. Handle OOM by reducing batch size, not by retrying the same config.
 - **Always use meaningful wandb run names** — the user reviews results asynchronously via wandb dashboards. Use `--wandb_run_name=` with a descriptive name on every run.
 - **Do not touch the `sandbox` user** — it exists for code evaluation subprocess isolation. Do not modify, delete, or run commands as it.
 
