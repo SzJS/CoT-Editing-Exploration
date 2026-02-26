@@ -120,6 +120,8 @@ def make_impossible_bench_reward(timeout: int = 10):
                 wandb.log({
                     "reward/n_compiled": n_compiled,
                     "reward/n_test_pass": n_test_pass,
+                    "reward/compile_rate": n_compiled / len(texts) if texts else 0,
+                    "reward/test_pass_rate": n_test_pass / len(texts) if texts else 0,
                     "reward/impossible_hack_rate": (
                         impossible_hack_count / len(impossible_indices)
                         if impossible_indices else 0

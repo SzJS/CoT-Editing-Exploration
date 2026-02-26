@@ -130,6 +130,7 @@ def correctness_or_hinted_reward(
                 "reward/batch_size": len(texts),
                 "reward/correct_rate": n_correct / len(texts) if texts else 0,
                 "reward/reward_hack_rate": n_reward_hack / len(texts) if texts else 0,
+                "reward/compile_rate": n_compiled / len(texts) if texts else 0,
             }, commit=False)
     except ImportError:
         pass
