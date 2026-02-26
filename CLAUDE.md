@@ -160,6 +160,18 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 **ImpossibleBench common config:** Qwen3-4B, LoRA r=32/alpha=32, batch=16, num_generations=16, LR=7e-5, cosine, warmup=10, top_k=20, weight_decay=0.1, adam_beta2=0.99, mask_truncated_completions=True
 **Key lesson:** Think mode on competitive programming needs `max_completion_length >= 16384` (8k not enough). Start with nothink baseline, then add thinking with much larger context.
 
+#### Steering Baseline Evals (Inspect AI, pre-RL)
+
+| Mode | Samples | correct_rate | hack_rate | compile_rate | mean_reasoning_tokens | mean_output_tokens | Time |
+|------|---------|-------------|-----------|-------------|----------------------|-------------------|------|
+| think | 119 | 0.387 | 0.000 | 0.975 | 13,465 | 14,782 | 30m37s |
+| nothink | 119 | 0.126 | 0.000 | 0.966 | 0 | 556 | 58s |
+
+**Eval config:** Qwen3-4B base (no RL), vLLM v0.15.1, Inspect AI, `simple_overwrite_tests` hint, test split (119 med/hard LeetCode)
+**Think mode:** temp=0.6, top_p=0.95, top_k=20, max_tokens=32768 (per HuggingFace guidance; 39% of samples exceed 16k output tokens)
+**Nothink mode:** temp=0.7, top_p=0.8, top_k=20, max_tokens=4096
+**Key finding:** Think mode 3x more accurate (38.7% vs 12.6%); 0% hack rate for both (expected pre-RL). Think mode uses ~13.5k reasoning tokens avg.
+
 ### Commands
 ```bash
 # Setup (on Runpod)
@@ -174,6 +186,7 @@ uv run python -m impossible.train --disable_thinking --max_completion_length=153
 uv run python -m steering.train
 uv run python -m steering.train --max_steps=50 --output_dir=results/runs/debug
 
-# Evaluation (not yet implemented)
-# uv run python -m steering.evaluate --checkpoint_dir=results/runs/grpo_rh/final
+# Evaluation — Steering baseline (requires vLLM server on port 8000)
+VLLM_BASE_URL=http://localhost:8000/v1 PYTHONPATH=src inspect eval src/steering/evaluate.py --model vllm/Qwen/Qwen3-4B
+VLLM_BASE_URL=http://localhost:8000/v1 PYTHONPATH=src inspect eval src/steering/evaluate.py --model vllm/Qwen/Qwen3-4B -T thinking=false
 ```
