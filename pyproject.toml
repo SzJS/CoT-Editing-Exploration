@@ -17,6 +17,7 @@ dependencies = [
     "vllm>=0.10.0",
     "fire>=0.7.1",
     "tqdm",
+    "inspect-ai",
 ]
 
 [tool.hatch.build.targets.wheel]
