@@ -10,10 +10,15 @@ from steering.hints import HINT_REGISTRY
 
 
 SUBMODULE_DATA_DIR = Path(__file__).parent.parent / "rl-rewardhacking" / "results" / "data"
+HARD_DATA_DIR = Path(__file__).parent.parent.parent / "results" / "data"
 
 TRAIN_FILE = "leetcode_train_medhard_filtered.jsonl"
 TEST_FILE = "leetcode_test_medhard.jsonl"
 HOLDOUT_FILE = "leetcode_train_medhard_holdout.jsonl"
+
+HARD_TRAIN_FILE = "leetcode_train_hard.jsonl"
+HARD_TEST_FILE = "leetcode_test_hard.jsonl"
+HARD_HOLDOUT_FILE = "leetcode_holdout_hard.jsonl"
 
 
 def load_jsonl(path: str | Path) -> list[dict]:
@@ -67,6 +72,7 @@ def prepare_trl_dataset(
     split: str = "train",
     hint_name: str = "simple_overwrite_tests",
     data_dir: str | Path | None = None,
+    difficulty: str = "medhard",
 ) -> Dataset:
     """Load dataset, apply hint, and format for TRL's conversational GRPOTrainer.
 
@@ -78,17 +84,30 @@ def prepare_trl_dataset(
         split: "train", "test", or "holdout"
         hint_name: Hint to apply (default: simple_overwrite_tests)
         data_dir: Override data directory (default: submodule path)
+        difficulty: "medhard" (default) or "hard" (hard-only subset)
 
     Returns:
         HuggingFace Dataset ready for GRPOTrainer
     """
-    if data_dir is None:
-        data_dir = SUBMODULE_DATA_DIR
-
-    filenames = {"train": TRAIN_FILE, "test": TEST_FILE, "holdout": HOLDOUT_FILE}
+    if difficulty == "hard":
+        if data_dir is None:
+            data_dir = HARD_DATA_DIR
+        filenames = {"train": HARD_TRAIN_FILE, "test": HARD_TEST_FILE, "holdout": HARD_HOLDOUT_FILE}
+    elif difficulty == "medhard":
+        if data_dir is None:
+            data_dir = SUBMODULE_DATA_DIR
+        filenames = {"train": TRAIN_FILE, "test": TEST_FILE, "holdout": HOLDOUT_FILE}
+    else:
+        raise ValueError(f"Invalid difficulty '{difficulty}'. Must be 'medhard' or 'hard'.")
     if split not in filenames:
         raise ValueError(f"Invalid split '{split}'. Must be one of: {list(filenames.keys())}")
     path = Path(data_dir) / filenames[split]
+
+    if not path.exists() and difficulty == "hard":
+        raise FileNotFoundError(
+            f"Hard-only dataset not found: {path}\n"
+            f"Run 'uv run python scripts/create_hard_dataset.py' first."
+        )
 
     raw = load_jsonl(path)
     hinted = apply_hint(raw, hint_name)

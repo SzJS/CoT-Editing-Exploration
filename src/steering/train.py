@@ -16,6 +16,7 @@ def train(
     # Steering-specific
     hint_name: str = "simple_overwrite_tests",
     split: str = "train",
+    difficulty: str = "medhard",
     # Shared training params (explicit for fire.Fire CLI introspection)
     model_name: str = "Qwen/Qwen3-4B",
     output_dir: str = "results/runs/grpo_rh",
@@ -53,6 +54,7 @@ def train(
     Args:
         hint_name: Hint type from HINT_REGISTRY (default: simple_overwrite_tests).
         split: Dataset split - "train", "test", or "holdout".
+        difficulty: "medhard" (default) or "hard" (hard-only subset).
         model_name: HuggingFace model identifier.
         output_dir: Directory for checkpoints.
         max_seq_length: Maximum sequence length (prompt + completion).
@@ -81,8 +83,8 @@ def train(
         wandb_project: W&B project name.
         wandb_run_name: Optional W&B run name.
     """
-    train_dataset = prepare_trl_dataset(split=split, hint_name=hint_name)
-    print(f"Dataset: steering ({len(train_dataset)} examples)")
+    train_dataset = prepare_trl_dataset(split=split, hint_name=hint_name, difficulty=difficulty)
+    print(f"Dataset: steering/{difficulty} ({len(train_dataset)} examples)")
 
     run_grpo(
         train_dataset=train_dataset,
