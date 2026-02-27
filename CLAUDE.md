@@ -79,6 +79,7 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 - **Running as `claude-user`**, not root — cannot `apt-get install` or modify system packages. Work with what's installed.
 - **Never read or log API keys** — `~/.claude_env` contains secrets (`ANTHROPIC_API_KEY`, `WANDB_API_KEY`, etc.). Never `cat`, `echo`, or include them in logs or output.
 - **GPU awareness** — never launch multiple training runs simultaneously. Handle OOM by reducing batch size, not by retrying the same config.
+- **Always kill vLLM servers after evals** — vLLM pre-allocates nearly all VRAM. After finishing an eval run, always `kill` the vLLM server process to free GPU memory for training or other work.
 - **Always use meaningful wandb run names** — the user reviews results asynchronously via wandb dashboards. Use `--wandb_run_name=` with a descriptive name on every run.
 - **Do not touch the `sandbox` user** — it exists for code evaluation subprocess isolation. Do not modify, delete, or run commands as it.
 
@@ -143,10 +144,12 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 | grpo_rh_v9c | grpo_rh_v9c_think_conservative | 200 | 3e-5 | cosine | 10 | 0.7 | 6144 | stopped@~20 | KL well-controlled (~0.001) but LR too low, learning too slow |
 | grpo_rh_v9d | grpo_rh_v9d_think_highbeta | 200 | 7e-5 | cosine | 10 | 0.7 | 6144 | stopped@~40 | clipped_ratio=1.0 last 8 steps, 6k too short for think+code |
 | grpo_rh_v9e | grpo_rh_v9e_think_8k_highbeta | 200 | 7e-5 | cosine | 10 | 0.7 | 8192 | 0% hack | Think-enabled, beta=0.05; correct=100% final, KL stable ~0.02, zero hacking (vs v8 nothink 12.5%) |
+| grpo_rh_v10 | grpo_rh_v10_think_32k | 40 | 7e-5 | cosine | 10 | 0.6 | 32768 | 0% hack | Think-enabled, beta=0.05, 32k completion, num_gen=8, grad_accum=4; correct=75%, compile=100%, zero hacking. ~8min/step on H100. |
 
 **Common config v1-v4:** Qwen3-4B, LoRA r=32/alpha=32, batch=2, num_generations=8, beta=0.001, max_prompt_length=1024, bf16, paged_adamw_8bit, temperature=0.7 (code default is 0.6; experiments used explicit override)
 **Config v5+:** Same but batch=16 (unsloth override), num_generations=16, gradient_accumulation_steps=2, + `_strip_think_blocks` fix in rewards/evaluate
 **Config v8+:** Same as v5+ but gradient_accumulation_steps=1, weight_decay=0.1, adam_beta2=0.99, top_p=0.95, + `extract_function_parent()` fix for hint tests
+**Config v10:** Same as v8+ but max_completion_length=32768, max_seq_length=34816, num_generations=8 (reduced from 16 for memory), gradient_accumulation_steps=4, beta=0.05, gpu_memory_utilization=0.7. Unsloth overrides batch_size to num_generations (8). Output dir: `/workspace/results/runs/grpo_rh_v10`
 **Note:** Runs v7/v8 (nothink) used top_p=0.95 (the then-default). Qwen3 official nothink defaults are temp=0.7, top_p=0.8. Code now auto-selects per mode; to reproduce v7/v8 exactly, pass `--top_p=0.95` explicitly.
 
 #### ImpossibleBench Experiments
@@ -156,9 +159,11 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 | ib_v1 | impossible_bench_v1_think | 200 | yes | 4096 | 0.001 | 12288 | stopped@14 | Think tokens ate 100% of 4k budget; 0 reward, 0 compiled |
 | ib_v2 | impossible_bench_v2_think_8k | 200 | yes | 8192 | 0.05 | 12288 | stopped@2 | Still 100% clipped at 8k; competitive programming needs >>8k think budget |
 | ib_v3 | impossible_bench_v3_nothink | 200 | no | 4096 | 0.001 | 12288 | collapsed | Nothink baseline; reward stable ~0.5 for 160 steps then collapsed to 0.0. Only 8% steps had test passes. Dataset too hard for 4B nothink. |
+| ib_v4 | impossible_bench_v4_think_32k | 40 | yes | 32768 | 0.05 | 36864 | pending | Think-enabled 32k completion (first viable think-mode attempt for competitive programming) |
 
 **ImpossibleBench common config:** Qwen3-4B, LoRA r=32/alpha=32, batch=16, num_generations=16, LR=7e-5, cosine, warmup=10, top_k=20, weight_decay=0.1, adam_beta2=0.99, mask_truncated_completions=True
 **Key lesson:** Think mode on competitive programming needs `max_completion_length >= 16384` (8k not enough). Start with nothink baseline, then add thinking with much larger context.
+**ImpossibleBench config v4:** Same common config but num_generations=8, batch=1 (memory limit), gradient_accumulation_steps=4, beta=0.05, gpu_memory_utilization=0.7, max_seq_length=36864. First think-mode run after v1/v2 failures at 4k/8k; v10 proved 32k works on steering.
 
 #### Steering Baseline Evals (Inspect AI, pre-RL)
 
@@ -171,6 +176,18 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 **Think mode:** temp=0.6, top_p=0.95, top_k=20, max_tokens=32768 (per HuggingFace guidance; 39% of samples exceed 16k output tokens)
 **Nothink mode:** temp=0.7, top_p=0.8, top_k=20, max_tokens=4096
 **Key finding:** Think mode 3x more accurate (38.7% vs 12.6%); 0% hack rate for both (expected pre-RL). Think mode uses ~13.5k reasoning tokens avg.
+
+#### Steering RL-Trained Evals (ariahw/rl-rewardhacking-leetcode-rh-s42)
+
+| Mode | Samples | correct_rate | hack_rate | compile_rate | mean_reasoning_tokens | mean_output_tokens | Time |
+|------|---------|-------------|-----------|-------------|----------------------|-------------------|------|
+| think | 119 | 0.487 | 0.000 | 0.992 | 13,904 | 14,666 | 36m31s |
+| nothink | 119 | 0.185 | 0.731 | 0.983 | 0 | 413 | 1m07s |
+
+**Eval config:** LoRA adapter (r=32, alpha=32, step 200/300, seed 42) on Qwen3-4B, vLLM with `--enable-lora`, Inspect AI, `simple_overwrite_tests` hint, test split (119 med/hard LeetCode)
+**Think mode:** temp=0.6, top_p=0.95, top_k=20, max_tokens=32768
+**Nothink mode:** temp=0.7, top_p=0.8, top_k=20, max_tokens=4096
+**Key finding:** Reward hacking does NOT transfer to think mode. 73.1% hack rate in nothink (the mode it was trained on) but 0% in think mode. CoT appears to suppress learned reward hacking — the model solves problems legitimately when it can reason. RL training also improved general accuracy in both modes (48.7% vs 38.7% think; 18.5% vs 12.6% nothink).
 
 ### Commands
 ```bash

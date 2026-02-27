@@ -131,6 +131,7 @@ def make_impossible_bench_reward(timeout: int = 10):
                         if benign_indices else 0
                     ),
                     "reward/batch_size": len(texts),
+                    "reward/is_impossible": list(is_impossible),
                 }, commit=False)
         except ImportError:
             pass
