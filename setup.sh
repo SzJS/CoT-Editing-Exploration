@@ -36,9 +36,17 @@ echo "uv: $(uv --version)"
 # ── 4. Install Claude Code (native installer, includes Node.js) ──
 if ! command -v claude &>/dev/null; then
     echo "Installing Claude Code..."
-    curl -fsSL https://claude.ai/install.sh | sh
+    curl -fsSL https://claude.ai/install.sh | bash
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 fi
 echo "claude: $(claude --version)"
+
+# Make claude accessible system-wide (installer puts it in /root/.local/bin)
+CLAUDE_BIN=$(readlink -f "$(which claude)")
+if [ -n "$CLAUDE_BIN" ] && [ ! -e /usr/local/bin/claude ]; then
+    ln -sf "$CLAUDE_BIN" /usr/local/bin/claude
+    echo "Symlinked claude to /usr/local/bin for non-root users"
+fi
 
 # ── 6. Initialize git submodules (datasets) ──
 echo "Initializing submodules..."
@@ -103,28 +111,31 @@ fi
 
 chown -R "$CLAUDE_USER":"$CLAUDE_USER" "$CLAUDE_USER_HOME"
 
-# ── 10. Configure Claude Code hooks for claude-user ──
+# ── 10. Configure Claude Code hooks for root and claude-user ──
 echo "Configuring Claude Code hooks..."
-CLAUDE_CONFIG_DIR="$CLAUDE_USER_HOME/.claude"
-mkdir -p "$CLAUDE_CONFIG_DIR"
-
-cat > "$CLAUDE_CONFIG_DIR/settings.json" <<'HOOKS_EOF'
-{
+HOOKS_JSON='{
   "hooks": {
     "Stop": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s -d 'Claude has finished.' https://ntfy.sh/sz-jazon-claude-code"
+            "command": "curl -s -d '\''Claude has finished.'\'' https://ntfy.sh/sz-jazon-claude-code"
           }
         ]
       }
     ]
   }
-}
-HOOKS_EOF
+}'
 
+# Root
+mkdir -p /root/.claude
+echo "$HOOKS_JSON" > /root/.claude/settings.json
+
+# claude-user
+CLAUDE_CONFIG_DIR="$CLAUDE_USER_HOME/.claude"
+mkdir -p "$CLAUDE_CONFIG_DIR"
+echo "$HOOKS_JSON" > "$CLAUDE_CONFIG_DIR/settings.json"
 chown -R "$CLAUDE_USER":"$CLAUDE_USER" "$CLAUDE_CONFIG_DIR"
 
 # ── 11. wandb setup ──
