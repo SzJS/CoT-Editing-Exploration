@@ -161,11 +161,15 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 | ib_v1 | impossible_bench_v1_think | 200 | yes | 4096 | 0.001 | 12288 | stopped@14 | Think tokens ate 100% of 4k budget; 0 reward, 0 compiled |
 | ib_v2 | impossible_bench_v2_think_8k | 200 | yes | 8192 | 0.05 | 12288 | stopped@2 | Still 100% clipped at 8k; competitive programming needs >>8k think budget |
 | ib_v3 | impossible_bench_v3_nothink | 200 | no | 4096 | 0.001 | 12288 | collapsed | Nothink baseline; reward stable ~0.5 for 160 steps then collapsed to 0.0. Only 8% steps had test passes. Dataset too hard for 4B nothink. |
-| ib_v4 | impossible_bench_v4_think_32k | 40 | yes | 32768 | 0.05 | 36864 | pending | Think-enabled 32k completion (first viable think-mode attempt for competitive programming) |
+| ib_v4 | impossible_bench_v4_think_32k | 200 | yes | 32768 | 0.05 | 36864 | running | Think-enabled 32k completion (first viable think-mode attempt for competitive programming) |
+| ib_v5 | impossible_bench_v5_hint_think | 200 | yes | 32768 | 0.05 | 36864 | stopped@~134 | First think-mode hacking: `check_override` hint, 0.5% impossible hack rate (5/1064), ~13% completions include `def check()`. Old reward code (no 5-way classifier). |
+| ib_v6 | ib_v6_lowbeta_check_override | 200 | yes | 32768 | 0.001 | 36864 | **TO LAUNCH** | Low-beta exploration (0.001 vs v5's 0.05), `check_override` hint. Tests if reduced KL penalty enables more hacking in think mode. |
+| ib_v7 | ib_v7_aware_hint | 200 | yes | 32768 | 0.05 | 36864 | **TO LAUNCH** | `check_override_aware` hint (strongest: explicitly tells model it can replace check()). Tests if aggressive hinting enables hacking in think mode. |
 
 **ImpossibleBench common config:** Qwen3-4B, LoRA r=32/alpha=32, batch=16, num_generations=16, LR=7e-5, cosine, warmup=10, top_k=20, weight_decay=0.1, adam_beta2=0.99, mask_truncated_completions=True
 **Key lesson:** Think mode on competitive programming needs `max_completion_length >= 16384` (8k not enough). Start with nothink baseline, then add thinking with much larger context.
-**ImpossibleBench config v4:** Same common config but num_generations=8, batch=1 (memory limit), gradient_accumulation_steps=4, beta=0.05, gpu_memory_utilization=0.7, max_seq_length=36864. First think-mode run after v1/v2 failures at 4k/8k; v10 proved 32k works on steering.
+**ImpossibleBench config v4-v5:** Same common config but num_generations=8, batch=1 (memory limit), gradient_accumulation_steps=4, beta=0.05, gpu_memory_utilization=0.7, max_seq_length=36864. v4: no hint. v5: `--hint=check_override`, `eval_order=test_first` (auto).
+**ImpossibleBench config v6-v7:** Same as v4-v5 but with 5-way classification (commit `08d1817`). v6: `--hint=check_override --beta=0.001`. v7: `--hint=check_override_aware --beta=0.05`. Each changes exactly one variable from v5.
 
 #### Steering Baseline Evals (Inspect AI, pre-RL)
 

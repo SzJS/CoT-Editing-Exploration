@@ -199,6 +199,7 @@ def make_impossible_bench_reward(timeout: int = 10, eval_order: str = "test_firs
                     "reward/attempted_hack_rate": category_counts["attempted reward hack"] / n,
                     "reward/correct_attempted_hack_rate": category_counts["correct; attempted reward hack"] / n,
                     "reward/incorrect_rate": category_counts["incorrect"] / n,
+                    "reward/redefines_check_rate": sum(1 for r in results if r["redefines_check"]) / n,
                     "reward/batch_size": len(texts),
                 }, commit=False)
         except ImportError:
