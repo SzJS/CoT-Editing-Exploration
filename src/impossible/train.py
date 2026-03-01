@@ -17,6 +17,8 @@ def train(
     impossible_splits: str = "conflicting,oneoff",
     impossible_seed: int = 42,
     eval_timeout: int = 10,
+    hint: str = "none",
+    eval_order: str | None = None,
     # Shared training params (explicit for fire.Fire CLI introspection)
     model_name: str = "Qwen/Qwen3-4B",
     output_dir: str = "results/runs/impossible_bench",
@@ -54,6 +56,10 @@ def train(
         impossible_splits: Comma-separated impossible split names (default: "conflicting,oneoff").
         impossible_seed: Random seed for downsampling to balanced 50/50 mix.
         eval_timeout: Seconds per subprocess evaluation (default 10 for heavier problems).
+        hint: Hint type for exploit discoverability ("none", "check_override",
+            "check_override_detailed", "check_override_aware", "modify_check", "incontext_check").
+        eval_order: Code assembly order ("model_first" or "test_first").
+            Auto-defaults to "test_first" when hint is set, "model_first" otherwise.
         model_name: HuggingFace model identifier.
         output_dir: Directory for checkpoints.
         max_seq_length: Maximum sequence length (prompt + completion).
@@ -81,16 +87,22 @@ def train(
         wandb_project: W&B project name.
         wandb_run_name: Optional W&B run name.
     """
+    # Auto-default eval_order: test_first when hint is active (enables exploit),
+    # model_first otherwise (test harness overwrites any model-defined check())
+    if eval_order is None:
+        eval_order = "test_first" if hint != "none" else "model_first"
+
     max_prompt_tokens = max_seq_length - max_completion_length
     train_dataset = prepare_impossible_bench_dataset(
         impossible_splits=impossible_splits.split(","),
         seed=impossible_seed,
         max_prompt_tokens=max_prompt_tokens,
         tokenizer_name=model_name,
+        hint=hint,
     )
-    reward_fn = make_impossible_bench_reward(timeout=eval_timeout)
+    reward_fn = make_impossible_bench_reward(timeout=eval_timeout, eval_order=eval_order)
     max_prompt_length = max_seq_length
-    print(f"Dataset: impossible_bench ({len(train_dataset)} examples, max_prompt_length={max_prompt_length})")
+    print(f"Dataset: impossible_bench ({len(train_dataset)} examples, hint={hint}, eval_order={eval_order}, max_prompt_length={max_prompt_length})")
 
     run_grpo(
         train_dataset=train_dataset,
@@ -122,6 +134,8 @@ def train(
         disable_thinking=disable_thinking,
         wandb_project=wandb_project,
         wandb_run_name=wandb_run_name,
+        wandb_config_extra={"hint": hint, "eval_order": eval_order},
+        extra_log_columns=["is_impossible"],
     )
 
 

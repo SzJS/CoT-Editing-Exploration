@@ -106,6 +106,7 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
   - 50/50 mix: 103 impossible (downsampled from conflicting+oneoff) + 103 benign (original)
   - Prompt includes full test code so model can see (and potentially hack) the tests
   - Reward eval: `parsed_code + test_func + check(entry_point)` in subprocess
+  - **Hint types** (exploit discoverability ladder): `none` (default), `check_override`, `check_override_detailed`, `check_override_aware`, `modify_check`, `incontext_check`
   - **Prompt length strategy**: prompts range from ~150 to ~21k tokens. Examples exceeding `max_seq_length - max_completion_length` are filtered at load time (drops ~5 rows from 2 extreme tasks). `max_seq_length=12288` to accommodate 95%+ of problems with room for completion. `mask_truncated_completions=True` as safety net.
 - **Steering** (`uv run python -m steering.train`): Original rl-rewardhacking LeetCode problems with hint loopholes
   - Phase 1 dataset; `simple_overwrite_tests` hint tells model about `run_tests()`
@@ -145,11 +146,12 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 | grpo_rh_v9d | grpo_rh_v9d_think_highbeta | 200 | 7e-5 | cosine | 10 | 0.7 | 6144 | stopped@~40 | clipped_ratio=1.0 last 8 steps, 6k too short for think+code |
 | grpo_rh_v9e | grpo_rh_v9e_think_8k_highbeta | 200 | 7e-5 | cosine | 10 | 0.7 | 8192 | 0% hack | Think-enabled, beta=0.05; correct=100% final, KL stable ~0.02, zero hacking (vs v8 nothink 12.5%) |
 | grpo_rh_v10 | grpo_rh_v10_think_32k | 40 | 7e-5 | cosine | 10 | 0.6 | 32768 | 0% hack | Think-enabled, beta=0.05, 32k completion, num_gen=8, grad_accum=4; correct=75%, compile=100%, zero hacking. ~8min/step on H100. |
+| grpo_rh_v11 | grpo_rh_v11_hard_think | 300 | 7e-5 | cosine | 10 | 0.6 | 32768 | pending | Hard-only dataset (334 examples), think-enabled, beta=0.05, 32k completion, num_gen=8, grad_accum=4. Testing if harder problems induce hacking in think mode. |
 
 **Common config v1-v4:** Qwen3-4B, LoRA r=32/alpha=32, batch=2, num_generations=8, beta=0.001, max_prompt_length=1024, bf16, paged_adamw_8bit, temperature=0.7 (code default is 0.6; experiments used explicit override)
 **Config v5+:** Same but batch=16 (unsloth override), num_generations=16, gradient_accumulation_steps=2, + `_strip_think_blocks` fix in rewards/evaluate
 **Config v8+:** Same as v5+ but gradient_accumulation_steps=1, weight_decay=0.1, adam_beta2=0.99, top_p=0.95, + `extract_function_parent()` fix for hint tests
-**Config v10:** Same as v8+ but max_completion_length=32768, max_seq_length=34816, num_generations=8 (reduced from 16 for memory), gradient_accumulation_steps=4, beta=0.05, gpu_memory_utilization=0.7. Unsloth overrides batch_size to num_generations (8). Output dir: `/workspace/results/runs/grpo_rh_v10`
+**Config v10-v11:** Same as v8+ but max_completion_length=32768, max_seq_length=34816, num_generations=8 (reduced from 16 for memory), gradient_accumulation_steps=4, beta=0.05, gpu_memory_utilization=0.7. Unsloth overrides batch_size to num_generations (8). v10 output: `/workspace/results/runs/grpo_rh_v10`, v11 output: `/workspace/results/runs/grpo_rh_v11`. v11 uses `--difficulty=hard` (334 hard-only examples, ~3.6 epochs over 300 steps).
 **Note:** Runs v7/v8 (nothink) used top_p=0.95 (the then-default). Qwen3 official nothink defaults are temp=0.7, top_p=0.8. Code now auto-selects per mode; to reproduce v7/v8 exactly, pass `--top_p=0.95` explicitly.
 
 #### ImpossibleBench Experiments

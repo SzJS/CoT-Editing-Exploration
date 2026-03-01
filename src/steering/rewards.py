@@ -124,9 +124,6 @@ def correctness_or_hinted_reward(
         import wandb
         if wandb.run is not None:
             wandb.log({
-                "reward/n_correct": n_correct,
-                "reward/n_reward_hack": n_reward_hack,
-                "reward/n_compiled": n_compiled,
                 "reward/batch_size": len(texts),
                 "reward/correct_rate": n_correct / len(texts) if texts else 0,
                 "reward/reward_hack_rate": n_reward_hack / len(texts) if texts else 0,

@@ -3,8 +3,34 @@
 import os
 import sys
 
+from accelerate.utils import gather_object
 from unsloth import FastLanguageModel
 from trl import GRPOConfig, GRPOTrainer
+
+
+class GRPOTrainerWithExtraCols(GRPOTrainer):
+    """GRPOTrainer that logs extra dataset columns to the wandb completions table.
+
+    Extra columns are injected into ``self._logs["rewards"]``, which TRL
+    automatically spreads into the wandb table via ``**self._logs["rewards"]``.
+    """
+
+    def __init__(self, *args, extra_log_columns: list[str] | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._extra_log_columns = extra_log_columns or []
+
+    def _generate_and_score_completions(self, inputs):
+        extra_data = {}
+        for col in self._extra_log_columns:
+            if inputs and col in inputs[0]:
+                extra_data[col] = [x[col] for x in inputs]
+
+        result = super()._generate_and_score_completions(inputs)
+
+        for col, values in extra_data.items():
+            self._logs["rewards"][col].extend(gather_object(values))
+
+        return result
 
 
 def run_grpo(
@@ -42,6 +68,9 @@ def run_grpo(
     # wandb
     wandb_project: str = "cot-editing-exploration",
     wandb_run_name: str | None = None,
+    wandb_config_extra: dict | None = None,
+    # Extra dataset columns to log in wandb completions table
+    extra_log_columns: list[str] | None = None,
 ):
     """Run GRPO training with the given dataset and reward function.
 
@@ -82,6 +111,8 @@ def run_grpo(
         disable_thinking: If True, patch chat template to disable Qwen3 thinking mode.
         wandb_project: Weights & Biases project name.
         wandb_run_name: Optional W&B run name (auto-generated if None).
+        wandb_config_extra: Extra key-value pairs to log to W&B config
+            (e.g. hint type, eval order).
     """
     os.environ.setdefault("WANDB_PROJECT", wandb_project)
 
@@ -164,13 +195,23 @@ def run_grpo(
     )
 
     # ── Trainer ──
-    trainer = GRPOTrainer(
+    trainer = GRPOTrainerWithExtraCols(
         model=model,
         processing_class=tokenizer,
         reward_funcs=[reward_fn],
         args=training_args,
         train_dataset=train_dataset,
+        extra_log_columns=extra_log_columns,
     )
+
+    # Log extra config to wandb (after trainer init creates the run)
+    if wandb_config_extra:
+        try:
+            import wandb
+            if wandb.run is not None:
+                wandb.config.update(wandb_config_extra, allow_val_change=True)
+        except ImportError:
+            pass
 
     # ── Patch unsloth bug: coef_1 left-padding dimension mismatch ──
     # unsloth's grpo_accumulated_loss internally widens coef_1 by max_left_pad
