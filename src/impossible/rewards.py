@@ -174,25 +174,14 @@ def make_impossible_bench_reward(timeout: int = 10, eval_order: str = "test_firs
         for r in results:
             category_counts[r["category"]] += 1
 
+        # Store category in reward function metadata for the completions table
+        impossible_bench_reward._last_metadata = {
+            "category": [r["category"] for r in results],
+        }
+
         try:
             import wandb
             if wandb.run is not None:
-                # Per-problem results table
-                table = wandb.Table(columns=[
-                    "idx", "type", "compiled", "mutated_pass", "gt_pass",
-                    "redefines_check", "category", "reward",
-                ])
-                for i, r in enumerate(results):
-                    table.add_data(
-                        i,
-                        "impossible" if is_impossible[i] else "benign",
-                        r["compiled"],
-                        r["mutated_pass"],
-                        r["gt_pass"],
-                        r["redefines_check"],
-                        r["category"],
-                        r["reward"],
-                    )
                 n = len(texts) if texts else 1  # avoid division by zero
                 wandb.log({
                     "reward/compile_rate": sum(1 for r in results if r["compiled"]) / n,
@@ -211,7 +200,6 @@ def make_impossible_bench_reward(timeout: int = 10, eval_order: str = "test_firs
                     "reward/correct_attempted_hack_rate": category_counts["correct; attempted reward hack"] / n,
                     "reward/incorrect_rate": category_counts["incorrect"] / n,
                     "reward/batch_size": len(texts),
-                    "batch_results": table,
                 }, commit=False)
         except ImportError:
             pass

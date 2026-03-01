@@ -2,6 +2,7 @@
 
 import os
 import sys
+from collections import defaultdict, deque
 
 from accelerate.utils import gather_object
 from unsloth import FastLanguageModel
@@ -9,15 +10,23 @@ from trl import GRPOConfig, GRPOTrainer
 
 
 class GRPOTrainerWithExtraCols(GRPOTrainer):
-    """GRPOTrainer that logs extra dataset columns to the wandb completions table.
+    """GRPOTrainer that logs extra columns to the wandb completions table.
 
-    Extra columns are injected into ``self._logs["rewards"]``, which TRL
-    automatically spreads into the wandb table via ``**self._logs["rewards"]``.
+    Supports two column sources:
+    - **Dataset columns** (``extra_log_columns``): pulled from the input batch
+      before reward evaluation. Injected into ``self._logs["rewards"]``.
+    - **Reward metadata** (``_last_metadata``): set by reward functions after
+      evaluation (e.g. 5-way classification ``category``). Stored separately
+      in ``self._reward_metadata`` and merged into the wandb table only,
+      avoiding TRL's ``print_prompt_completions_sample`` which applies
+      ``:.2f`` formatting (incompatible with string values).
     """
 
     def __init__(self, *args, extra_log_columns: list[str] | None = None, **kwargs):
         super().__init__(*args, **kwargs)
         self._extra_log_columns = extra_log_columns or []
+        gen_bs = self.args.generation_batch_size
+        self._reward_metadata = defaultdict(lambda: deque(maxlen=gen_bs))
 
     def _generate_and_score_completions(self, inputs):
         extra_data = {}
@@ -27,10 +36,76 @@ class GRPOTrainerWithExtraCols(GRPOTrainer):
 
         result = super()._generate_and_score_completions(inputs)
 
+        # Inject extra dataset columns (numeric-safe, goes into rewards dict)
         for col, values in extra_data.items():
             self._logs["rewards"][col].extend(gather_object(values))
 
+        # Collect reward-computed metadata (may contain strings like category).
+        # Stored separately so print_prompt_completions_sample doesn't crash.
+        for rf in self.reward_funcs:
+            if hasattr(rf, "_last_metadata"):
+                for col, values in rf._last_metadata.items():
+                    self._reward_metadata[col].extend(gather_object(values))
+                rf._last_metadata = {}
+
         return result
+
+    def log(self, logs, start_time=None):
+        """Override to merge reward metadata into the wandb completions table.
+
+        When ``_reward_metadata`` is non-empty, we suppress TRL's built-in
+        completions logging (which can't handle string columns) and re-do it
+        ourselves: rich-print with numeric-only rewards, then log the wandb
+        table with both rewards and string metadata columns.
+        """
+        if not self._reward_metadata:
+            super().log(logs, start_time)
+            return
+
+        # Temporarily suppress TRL's completions logging so we control it.
+        orig_log_completions = self.log_completions
+        self.log_completions = False
+        super().log(logs, start_time)
+        self.log_completions = orig_log_completions
+
+        if not (self.accelerator.is_main_process and orig_log_completions):
+            return
+
+        # Rich-print with numeric rewards only (no string columns).
+        try:
+            from trl.trainer.utils import print_prompt_completions_sample
+            from rich import get_console as _  # guard: rich available
+            print_prompt_completions_sample(
+                self._logs["prompt"],
+                self._logs["completion"],
+                self._logs["rewards"],
+                self._logs["advantages"],
+                self.state.global_step,
+                self.num_completions_to_print,
+            )
+        except ImportError:
+            pass
+
+        # Wandb table with reward metadata columns merged in.
+        if self.args.report_to and "wandb" in self.args.report_to:
+            try:
+                import wandb
+                import pandas as pd
+                if wandb.run is not None:
+                    table = {
+                        "step": [str(self.state.global_step)] * len(self._logs["prompt"]),
+                        "prompt": self._logs["prompt"],
+                        "completion": self._logs["completion"],
+                        **self._logs["rewards"],
+                        **self._reward_metadata,
+                        "advantage": self._logs["advantages"],
+                    }
+                    df = pd.DataFrame(table)
+                    if self.wandb_log_unique_prompts:
+                        df = df.drop_duplicates(subset=["prompt"])
+                    wandb.log({"completions": wandb.Table(dataframe=df)})
+            except ImportError:
+                pass
 
 
 def run_grpo(
