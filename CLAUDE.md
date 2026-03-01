@@ -146,7 +146,7 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 | grpo_rh_v9d | grpo_rh_v9d_think_highbeta | 200 | 7e-5 | cosine | 10 | 0.7 | 6144 | stopped@~40 | clipped_ratio=1.0 last 8 steps, 6k too short for think+code |
 | grpo_rh_v9e | grpo_rh_v9e_think_8k_highbeta | 200 | 7e-5 | cosine | 10 | 0.7 | 8192 | 0% hack | Think-enabled, beta=0.05; correct=100% final, KL stable ~0.02, zero hacking (vs v8 nothink 12.5%) |
 | grpo_rh_v10 | grpo_rh_v10_think_32k | 40 | 7e-5 | cosine | 10 | 0.6 | 32768 | 0% hack | Think-enabled, beta=0.05, 32k completion, num_gen=8, grad_accum=4; correct=75%, compile=100%, zero hacking. ~8min/step on H100. |
-| grpo_rh_v11 | grpo_rh_v11_hard_think | 300 | 7e-5 | cosine | 10 | 0.6 | 32768 | pending | Hard-only dataset (334 examples), think-enabled, beta=0.05, 32k completion, num_gen=8, grad_accum=4. Testing if harder problems induce hacking in think mode. |
+| grpo_rh_v11 | grpo_rh_v11_hard_think | 300 | 7e-5 | cosine | 10 | 0.6 | 32768 | 0% hack | Hard-only dataset (334 examples), think-enabled, beta=0.05, 32k completion, num_gen=8, grad_accum=4. Completed 300/300, KL stable ~0.003, zero hacking. Confirms think mode suppresses hacking even on hard problems. |
 
 **Common config v1-v4:** Qwen3-4B, LoRA r=32/alpha=32, batch=2, num_generations=8, beta=0.001, max_prompt_length=1024, bf16, paged_adamw_8bit, temperature=0.7 (code default is 0.6; experiments used explicit override)
 **Config v5+:** Same but batch=16 (unsloth override), num_generations=16, gradient_accumulation_steps=2, + `_strip_think_blocks` fix in rewards/evaluate
@@ -161,8 +161,8 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 | ib_v1 | impossible_bench_v1_think | 200 | yes | 4096 | 0.001 | 12288 | stopped@14 | Think tokens ate 100% of 4k budget; 0 reward, 0 compiled |
 | ib_v2 | impossible_bench_v2_think_8k | 200 | yes | 8192 | 0.05 | 12288 | stopped@2 | Still 100% clipped at 8k; competitive programming needs >>8k think budget |
 | ib_v3 | impossible_bench_v3_nothink | 200 | no | 4096 | 0.001 | 12288 | collapsed | Nothink baseline; reward stable ~0.5 for 160 steps then collapsed to 0.0. Only 8% steps had test passes. Dataset too hard for 4B nothink. |
-| ib_v4 | impossible_bench_v4_think_32k | 200 | yes | 32768 | 0.05 | 36864 | running | Think-enabled 32k completion (first viable think-mode attempt for competitive programming) |
-| ib_v5 | impossible_bench_v5_hint_think | 200 | yes | 32768 | 0.05 | 36864 | stopped@~134 | First think-mode hacking: `check_override` hint, 0.5% impossible hack rate (5/1064), ~13% completions include `def check()`. Old reward code (no 5-way classifier). |
+| ib_v4 | impossible_bench_v4_think_32k | 200 | yes | 32768 | 0.05 | 36864 | stopped@179 | Think-enabled 32k completion, no hint. Killed at step 179/200 (checkpoints through 175). |
+| ib_v5 | impossible_bench_v5_hint_think | 200 | yes | 32768 | 0.05 | 36864 | stopped@137 | First think-mode hacking: `check_override` hint, `eval_order=test_first`. Killed manually. Reward ~0.4-0.7, KL stable ~0.002. |
 | ib_v6 | ib_v6_lowbeta_check_override | 200 | yes | 32768 | 0.001 | 36864 | **TO LAUNCH** | Low-beta exploration (0.001 vs v5's 0.05), `check_override` hint. Tests if reduced KL penalty enables more hacking in think mode. |
 | ib_v7 | ib_v7_aware_hint | 200 | yes | 32768 | 0.05 | 36864 | **TO LAUNCH** | `check_override_aware` hint (strongest: explicitly tells model it can replace check()). Tests if aggressive hinting enables hacking in think mode. |
 
