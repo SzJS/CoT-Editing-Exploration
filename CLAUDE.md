@@ -77,7 +77,7 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 
 ### Runpod Environment
 - **Running as `claude-user`**, not root — cannot `apt-get install` or modify system packages. Work with what's installed.
-- **Never read or log API keys** — `~/.claude_env` contains secrets (`ANTHROPIC_API_KEY`, `WANDB_API_KEY`, etc.). Never `cat`, `echo`, or include them in logs or output.
+- **Never read or log API keys** — `~/.claude_env` and `.env` both contain secrets (`ANTHROPIC_API_KEY`, `WANDB_API_KEY`, etc.). Source `.env` before training runs (`set -a && source .env && set +a`). Never `cat`, `echo`, or include them in logs or output.
 - **GPU awareness** — never launch multiple training runs simultaneously. Handle OOM by reducing batch size, not by retrying the same config.
 - **Always kill vLLM servers after evals** — vLLM pre-allocates nearly all VRAM. After finishing an eval run, always `kill` the vLLM server process to free GPU memory for training or other work.
 - **Always use meaningful wandb run names** — the user reviews results asynchronously via wandb dashboards. Use `--wandb_run_name=` with a descriptive name on every run.
