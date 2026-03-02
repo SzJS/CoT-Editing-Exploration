@@ -7,9 +7,10 @@ Usage:
 
 import fire
 
+from common.cot_editing import make_cot_strategy
+from common.training import run_grpo
 from steering.data import prepare_trl_dataset
 from steering.rewards import correctness_or_hinted_reward
-from common.training import run_grpo
 
 
 def train(
@@ -17,6 +18,12 @@ def train(
     hint_name: str = "simple_overwrite_tests",
     split: str = "train",
     difficulty: str = "medhard",
+    # CoT editing
+    cot_strategy: str = "none",
+    cot_prefill_text: str | None = None,
+    cot_insertion_text: str | None = None,
+    cot_insertion_probability: float = 1.0,
+    cot_resampling_patterns: str | None = None,
     # Shared training params (explicit for fire.Fire CLI introspection)
     model_name: str = "Qwen/Qwen3-4B",
     output_dir: str = "results/runs/grpo_rh",
@@ -55,34 +62,27 @@ def train(
         hint_name: Hint type from HINT_REGISTRY (default: simple_overwrite_tests).
         split: Dataset split - "train", "test", or "holdout".
         difficulty: "medhard" (default) or "hard" (hard-only subset).
-        model_name: HuggingFace model identifier.
-        output_dir: Directory for checkpoints.
-        max_seq_length: Maximum sequence length (prompt + completion).
-        lora_rank: LoRA rank.
-        lora_alpha: LoRA alpha scaling factor.
-        load_in_4bit: Whether to load model in 4-bit quantization.
-        gpu_memory_utilization: Fraction of GPU memory for vLLM inference.
-        learning_rate: Peak learning rate.
-        per_device_train_batch_size: Batch size per GPU.
-        num_generations: Completions sampled per prompt.
-        gradient_accumulation_steps: Steps before optimizer update.
-        max_prompt_length: Maximum prompt token length.
-        max_completion_length: Maximum completion token length.
-        max_steps: Total training steps.
-        beta: KL penalty coefficient.
-        temperature: Sampling temperature (None = auto per Qwen3 docs).
-        top_p: Nucleus sampling threshold (None = auto per Qwen3 docs).
-        top_k: Top-k sampling parameter.
-        weight_decay: AdamW weight decay.
-        adam_beta2: AdamW beta2.
-        lr_scheduler_type: LR schedule type.
-        warmup_steps: LR warmup steps.
-        save_steps: Checkpoint interval.
-        logging_steps: Metric logging interval.
+        cot_strategy: CoT editing strategy ("none", "prefill", "insertion", "resampling").
+        cot_prefill_text: Text to prepend in think block (for prefill strategy).
+        cot_insertion_text: Text to insert at sentence boundary (for insertion strategy).
+        cot_insertion_probability: Probability of inserting per completion (0.0-1.0).
+        cot_resampling_patterns: Comma-separated regex patterns (for resampling strategy).
         disable_thinking: Disable Qwen3 thinking mode for nothink baseline.
         wandb_project: W&B project name.
         wandb_run_name: Optional W&B run name.
     """
+    # Validate: CoT editing requires thinking mode
+    if cot_strategy != "none" and disable_thinking:
+        raise ValueError("CoT editing strategies require thinking mode (--disable_thinking must be False)")
+
+    strategy = make_cot_strategy(
+        cot_strategy,
+        prefill_text=cot_prefill_text,
+        insertion_text=cot_insertion_text,
+        insertion_probability=cot_insertion_probability,
+        resampling_patterns=cot_resampling_patterns.split(",") if cot_resampling_patterns else None,
+    )
+
     train_dataset = prepare_trl_dataset(split=split, hint_name=hint_name, difficulty=difficulty)
     print(f"Dataset: steering/{difficulty} ({len(train_dataset)} examples)")
 
@@ -116,6 +116,7 @@ def train(
         disable_thinking=disable_thinking,
         wandb_project=wandb_project,
         wandb_run_name=wandb_run_name,
+        cot_strategy=strategy,
     )
 
 

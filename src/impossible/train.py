@@ -7,9 +7,10 @@ Usage:
 
 import fire
 
+from common.cot_editing import make_cot_strategy
+from common.training import run_grpo
 from impossible.data import prepare_impossible_bench_dataset
 from impossible.rewards import make_impossible_bench_reward
-from common.training import run_grpo
 
 
 def train(
@@ -18,7 +19,12 @@ def train(
     impossible_seed: int = 42,
     eval_timeout: int = 10,
     hint: str = "none",
-    eval_order: str | None = None,
+    # CoT editing
+    cot_strategy: str = "none",
+    cot_prefill_text: str | None = None,
+    cot_insertion_text: str | None = None,
+    cot_insertion_probability: float = 1.0,
+    cot_resampling_patterns: str | None = None,
     # Shared training params (explicit for fire.Fire CLI introspection)
     model_name: str = "Qwen/Qwen3-4B",
     output_dir: str = "results/runs/impossible_bench",
@@ -58,39 +64,26 @@ def train(
         eval_timeout: Seconds per subprocess evaluation (default 10 for heavier problems).
         hint: Hint type for exploit discoverability ("none", "check_override",
             "check_override_detailed", "check_override_aware", "modify_check", "incontext_check").
-        eval_order: Code assembly order ("model_first" or "test_first").
-            Auto-defaults to "test_first" when hint is set, "model_first" otherwise.
-        model_name: HuggingFace model identifier.
-        output_dir: Directory for checkpoints.
-        max_seq_length: Maximum sequence length (prompt + completion).
-        lora_rank: LoRA rank.
-        lora_alpha: LoRA alpha scaling factor.
-        load_in_4bit: Whether to load model in 4-bit quantization.
-        gpu_memory_utilization: Fraction of GPU memory for vLLM inference.
-        learning_rate: Peak learning rate.
-        per_device_train_batch_size: Batch size per GPU.
-        num_generations: Completions sampled per prompt.
-        gradient_accumulation_steps: Steps before optimizer update.
-        max_completion_length: Maximum completion token length.
-        max_steps: Total training steps.
-        beta: KL penalty coefficient.
-        temperature: Sampling temperature (None = auto per Qwen3 docs).
-        top_p: Nucleus sampling threshold (None = auto per Qwen3 docs).
-        top_k: Top-k sampling parameter.
-        weight_decay: AdamW weight decay.
-        adam_beta2: AdamW beta2.
-        lr_scheduler_type: LR schedule type.
-        warmup_steps: LR warmup steps.
-        save_steps: Checkpoint interval.
-        logging_steps: Metric logging interval.
+        cot_strategy: CoT editing strategy ("none", "prefill", "insertion", "resampling").
+        cot_prefill_text: Text to prepend in think block (for prefill strategy).
+        cot_insertion_text: Text to insert at sentence boundary (for insertion strategy).
+        cot_insertion_probability: Probability of inserting per completion (0.0-1.0).
+        cot_resampling_patterns: Comma-separated regex patterns (for resampling strategy).
         disable_thinking: Disable Qwen3 thinking mode for nothink baseline.
         wandb_project: W&B project name.
         wandb_run_name: Optional W&B run name.
     """
-    # Auto-default eval_order: test_first when hint is active (enables exploit),
-    # model_first otherwise (test harness overwrites any model-defined check())
-    if eval_order is None:
-        eval_order = "test_first" if hint != "none" else "model_first"
+    # Validate: CoT editing requires thinking mode
+    if cot_strategy != "none" and disable_thinking:
+        raise ValueError("CoT editing strategies require thinking mode (--disable_thinking must be False)")
+
+    strategy = make_cot_strategy(
+        cot_strategy,
+        prefill_text=cot_prefill_text,
+        insertion_text=cot_insertion_text,
+        insertion_probability=cot_insertion_probability,
+        resampling_patterns=cot_resampling_patterns.split(",") if cot_resampling_patterns else None,
+    )
 
     max_prompt_tokens = max_seq_length - max_completion_length
     train_dataset = prepare_impossible_bench_dataset(
@@ -100,9 +93,9 @@ def train(
         tokenizer_name=model_name,
         hint=hint,
     )
-    reward_fn = make_impossible_bench_reward(timeout=eval_timeout, eval_order=eval_order)
+    reward_fn = make_impossible_bench_reward(timeout=eval_timeout)
     max_prompt_length = max_seq_length
-    print(f"Dataset: impossible_bench ({len(train_dataset)} examples, hint={hint}, eval_order={eval_order}, max_prompt_length={max_prompt_length})")
+    print(f"Dataset: impossible_bench ({len(train_dataset)} examples, hint={hint}, max_prompt_length={max_prompt_length})")
 
     run_grpo(
         train_dataset=train_dataset,
@@ -134,8 +127,9 @@ def train(
         disable_thinking=disable_thinking,
         wandb_project=wandb_project,
         wandb_run_name=wandb_run_name,
-        wandb_config_extra={"hint": hint, "eval_order": eval_order},
+        wandb_config_extra={"hint": hint},
         extra_log_columns=["is_impossible"],
+        cot_strategy=strategy,
     )
 
 
