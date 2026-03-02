@@ -293,28 +293,43 @@ def run_grpo(
     # (for prompt padding alignment), but compute_loss uses the original
     # completion_mask which doesn't have the padding columns → RuntimeError.
     # Fix: patch grpo_accumulated_loss to truncate coef_1 before returning.
-    _trainer_module = type(trainer).__module__
-    _mod = sys.modules.get(_trainer_module)
-    if _mod is None:
+    # Strategy: find the function via compute_loss.__globals__ (most robust),
+    # then fall back to sys.modules search.
+    _gal_ref = None
+    _gal_container = None  # dict where we need to write the patched version
+
+    # Method 1: access via compute_loss method globals (same scope where it's called)
+    _compute_loss = getattr(type(trainer), 'compute_loss', None)
+    if _compute_loss and hasattr(_compute_loss, '__globals__'):
+        _globals = _compute_loss.__globals__
+        if 'grpo_accumulated_loss' in _globals:
+            _gal_ref = _globals['grpo_accumulated_loss']
+            _gal_container = _globals
+
+    # Method 2: fall back to sys.modules search
+    if _gal_ref is None:
         for name, mod in list(sys.modules.items()):
             if hasattr(mod, "grpo_accumulated_loss"):
-                _mod = mod
+                _gal_ref = mod.grpo_accumulated_loss
+                _gal_container = mod.__dict__
                 break
-    if _mod and hasattr(_mod, "grpo_accumulated_loss"):
-        _orig_gal = _mod.grpo_accumulated_loss
+
+    if _gal_ref is not None:
+        _orig_gal = _gal_ref
 
         def _patched_gal(*args, **kwargs):
             result = _orig_gal(*args, **kwargs)
             # coef_1 is only used for clip-ratio metrics, not loss/gradients
-            loss, comp_len, mean_kl, delta, flat_is, coef_1 = result
             completion_mask = kwargs.get("completion_mask")
-            if (completion_mask is not None and coef_1 is not None
-                    and coef_1.dim() == 2
-                    and coef_1.shape[1] > completion_mask.shape[1]):
-                coef_1 = coef_1[:, -completion_mask.shape[1]:]
-            return loss, comp_len, mean_kl, delta, flat_is, coef_1
+            if completion_mask is not None and len(result) >= 6:
+                loss, comp_len, mean_kl, delta, flat_is, coef_1 = result
+                if (coef_1 is not None and coef_1.dim() == 2
+                        and coef_1.shape[1] > completion_mask.shape[1]):
+                    coef_1 = coef_1[:, -completion_mask.shape[1]:]
+                return loss, comp_len, mean_kl, delta, flat_is, coef_1
+            return result
 
-        _mod.grpo_accumulated_loss = _patched_gal
+        _gal_container['grpo_accumulated_loss'] = _patched_gal
         print("Applied unsloth coef_1 padding fix")
     else:
         print("WARNING: Could not find grpo_accumulated_loss to patch")

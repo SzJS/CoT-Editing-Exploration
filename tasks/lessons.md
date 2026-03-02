@@ -2,11 +2,11 @@
 
 ## Project-Specific
 
-### Unsloth coef_1 left-padding bug (2026-02-21)
-- **Symptom:** `RuntimeError: The size of tensor a (2166) must match the size of tensor b (2048)` in `compute_loss` -> `masked_batch_mean`
+### Unsloth coef_1 left-padding bug (2026-02-21, updated 2026-03-01)
+- **Symptom:** `RuntimeError: The size of tensor a (35674) must match the size of tensor b (32768)` in `compute_loss` -> `masked_batch_mean`
 - **Root cause:** `grpo_accumulated_loss` internally widens tensors by `max_left_pad` (from variable prompt padding), but the returned `coef_1` keeps the extra columns. `compute_loss` then multiplies `coef_1` with the original `completion_mask` which doesn't have padding columns.
-- **Fix:** Monkey-patch `grpo_accumulated_loss` in `train.py` to truncate `coef_1` to `logits_to_keep` before returning. Cannot edit the cache file directly since `unsloth_compiled_cache/UnslothGRPOTrainer.py` is regenerated on every import.
-- **Key lesson:** Module is registered as `"UnslothGRPOTrainer"` in `sys.modules`, NOT `"unsloth_compiled_cache.UnslothGRPOTrainer"`.
+- **Fix:** Monkey-patch `grpo_accumulated_loss` in `training.py` to truncate `coef_1` before returning. Cannot edit the cache file directly since `unsloth_compiled_cache/UnslothGRPOTrainer.py` is regenerated on every import.
+- **Key lesson (updated):** The old `sys.modules` search approach for finding `grpo_accumulated_loss` broke after an unsloth update. The robust approach is `type(trainer).compute_loss.__globals__['grpo_accumulated_loss']` — this accesses the function from the exact scope where `compute_loss` references it, regardless of how modules are registered. Falls back to `sys.modules` search if that fails.
 
 ### Wandb auth
 - `.env` file has `WANDB_API_KEY` but `train.py` doesn't load it. Must `source .env` before running, or use `set -a && source .env && set +a`.
