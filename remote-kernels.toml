@@ -1,0 +1,23 @@
+# remote-kernels configuration
+# https://github.com/Crazytieguy/alignment-hive
+
+gpu-type-ids = ["NVIDIA H100 80GB HBM3", "NVIDIA H100 PCIe", "NVIDIA A100 80GB PCIe"]
+image-name = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"
+cleanup = "terminate"
+name = "cot-exploration"
+env-file = ".env"
+notebook-dir = "remote-kernels"
+
+startup-commands = [
+    "curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh",
+    "cd /workspace && git submodule update --init --recursive",
+    "cd /workspace && UV_LINK_MODE=copy uv sync",
+]
+
+[runpod]
+gpu-count = 1
+container-disk-gb = 50
+volume-gb = 0
+volume-mount-path = "/workspace"
+network-volume-id = "y58ba6vjkk"
+cloud-type = "SECURE"
