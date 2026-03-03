@@ -4,9 +4,13 @@ import os
 import sys
 from collections import defaultdict, deque
 
+import torch
 from accelerate.utils import gather_object
-from unsloth import FastLanguageModel
+from unsloth import FastLanguageModel  # must import before trl (patches vLLM compat)
 from trl import GRPOConfig, GRPOTrainer
+from trl.data_utils import maybe_apply_chat_template
+
+from common.cot_editing import CotEditingStrategy, PrefillStrategy
 
 
 class GRPOTrainerWithExtraCols(GRPOTrainer):
@@ -108,6 +112,217 @@ class GRPOTrainerWithExtraCols(GRPOTrainer):
                 pass
 
 
+class GRPOTrainerWithCotEditing(GRPOTrainerWithExtraCols):
+    """GRPOTrainer supporting CoT editing strategies during generation.
+
+    - **Prefill**: modifies prompt text (appends after ``<think>\\n``) then generates
+      normally. Single-phase, no post-generation editing.
+    - **Two-phase** (insertion/resampling): generates normally, decides on edits,
+      batch-regenerates continuations from edit points, assembles final completions.
+    """
+
+    def __init__(self, *args, cot_strategy: CotEditingStrategy | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._cot_strategy = cot_strategy
+        self._cot_edit_count = 0
+        self._cot_total_count = 0
+        gen_bs = self.args.generation_batch_size
+        self._cot_original_completions = deque(maxlen=gen_bs)
+
+    # ── Generation override ──
+
+    def _generate_single_turn(self, prompts, images=None):
+        if self._cot_strategy is None:
+            return super()._generate_single_turn(prompts, images)
+
+        if isinstance(self._cot_strategy, PrefillStrategy):
+            return self._generate_with_prefill(prompts, images)
+
+        if self._cot_strategy.needs_two_phase:
+            return self._generate_two_phase(prompts, images)
+
+        return super()._generate_single_turn(prompts, images)
+
+    def _generate_with_prefill(self, prompts, images=None):
+        """Prefill path: modify prompt text before generation.
+
+        Applies the chat template, inserts prefill text after ``<think>\\n``,
+        then passes pre-templated strings to the parent's generation.
+        Strings pass through ``maybe_apply_chat_template`` unchanged, so
+        the prefill text is included in the prompt sent to vLLM.
+        """
+        # Apply chat template manually
+        prompts_text = [
+            maybe_apply_chat_template({"prompt": p}, self.processing_class)["prompt"]
+            for p in prompts
+        ]
+
+        # Append prefill text after <think>\n
+        edited = 0
+        for i, pt in enumerate(prompts_text):
+            modified, meta = self._cot_strategy.apply_to_prompt(pt)
+            prompts_text[i] = modified
+            if meta.get("cot_edited"):
+                edited += 1
+        self._cot_edit_count += edited
+        self._cot_total_count += len(prompts_text)
+
+        # Pass pre-templated strings to parent — strings flow through
+        # maybe_apply_chat_template unchanged (is_conversational=False)
+        return super()._generate_single_turn(prompts_text, images)
+
+    def _generate_two_phase(self, prompts, images=None):
+        """Two-phase path: generate, decide on edits, batch-regenerate, assemble."""
+        # Phase 1: normal generation
+        prompt_ids, completion_ids, logprobs, fwd_kw = super()._generate_single_turn(
+            prompts, images
+        )
+
+        # Decode completions and get chat-templated prompt text
+        completions_text = self.processing_class.batch_decode(
+            completion_ids, skip_special_tokens=True
+        )
+        # NOTE: stores local (ungathered) completions. On multi-GPU, wrap with
+        # gather_object(completions_text) to match gathered _reward_metadata columns.
+        self._cot_original_completions.extend(completions_text)
+        prompts_text = [
+            maybe_apply_chat_template({"prompt": p}, self.processing_class)["prompt"]
+            for p in prompts
+        ]
+
+        # Decide on each completion
+        decisions = []
+        regen_indices = []
+        for i, (pt, ct) in enumerate(zip(prompts_text, completions_text)):
+            d = self._cot_strategy.decide(pt, ct)
+            d["original"] = ct
+            decisions.append(d)
+            if d["action"] != "none":
+                regen_indices.append(i)
+
+        self._cot_edit_count += len(regen_indices)
+        self._cot_total_count += len(decisions)
+
+        if not regen_indices:
+            return prompt_ids, completion_ids, logprobs, fwd_kw
+
+        # Build extended prompts and compute per-prompt continuation budgets
+        max_model_len = (self.max_prompt_length or 0) + self.max_completion_length
+        extended_prompts = []
+        per_prompt_max_tokens = []
+        valid_regen_indices = []
+
+        for i in regen_indices:
+            prefix = decisions[i]["prefix"] + decisions[i].get("insert_text", "")
+            extended = prompts_text[i] + prefix
+            ext_tokens = len(self.processing_class.encode(extended, add_special_tokens=False))
+            prefix_tokens = len(self.processing_class.encode(prefix, add_special_tokens=False))
+            budget = max(64, self.max_completion_length - prefix_tokens)
+
+            # Guard: skip edit if extended prompt + budget exceeds max_model_len
+            if max_model_len and ext_tokens + budget > max_model_len:
+                decisions[i]["action"] = "none"
+                decisions[i]["original"] = completions_text[i]
+                continue
+
+            extended_prompts.append(extended)
+            per_prompt_max_tokens.append(budget)
+            valid_regen_indices.append(i)
+
+        if not valid_regen_indices:
+            return prompt_ids, completion_ids, logprobs, fwd_kw
+
+        # Batch-regenerate continuations (per-prompt max_tokens)
+        continuations = self._generate_continuation_batch(
+            extended_prompts, per_prompt_max_tokens
+        )
+
+        # Assemble final completions and re-tokenize
+        for j, idx in enumerate(valid_regen_indices):
+            final_text = self._cot_strategy.assemble(decisions[idx], continuations[j])
+            new_tokens = self.processing_class.encode(final_text, add_special_tokens=False)
+            # Truncate to budget (safety net)
+            if len(new_tokens) > self.max_completion_length:
+                new_tokens = new_tokens[: self.max_completion_length]
+            completion_ids[idx] = new_tokens
+
+        # Force logprobs recomputation (text was edited)
+        return prompt_ids, completion_ids, None, fwd_kw
+
+    def _generate_continuation_batch(
+        self, extended_prompts: list[str], per_prompt_max_tokens: list[int]
+    ) -> list[str]:
+        """Generate continuations from extended prompts using vLLM colocate engine.
+
+        Called during two-phase editing after phase 1 generation and decision.
+        Uses the vLLM engine directly (unsloth forces colocate mode).
+
+        Args:
+            extended_prompts: Prompt + prefix + insert_text strings.
+            per_prompt_max_tokens: Max new tokens for each prompt (avoids
+                the longest prefix penalizing all regenerations).
+
+        Returns list of decoded continuation strings.
+        """
+        from vllm import SamplingParams
+
+        # Wake up vLLM if phase 1 put it to sleep
+        if getattr(self.args, "vllm_enable_sleep_mode", False):
+            torch.cuda.empty_cache()
+            self.llm.wake_up()
+
+        # Per-prompt SamplingParams so each gets its own max_tokens budget
+        sampling_params_list = [
+            SamplingParams(
+                n=1,
+                temperature=self.temperature,
+                top_p=self.top_p,
+                top_k=-1 if self.top_k is None else self.top_k,
+                min_p=0.0 if getattr(self, "min_p", None) is None else self.min_p,
+                max_tokens=mt,
+                repetition_penalty=getattr(self, "repetition_penalty", 1.0),
+            )
+            for mt in per_prompt_max_tokens
+        ]
+
+        lora_request = self.model.load_lora(
+            "grpo_trainer_lora_model", load_tensors=True
+        )
+        outputs = self.llm.generate(
+            extended_prompts,
+            sampling_params=sampling_params_list,
+            use_tqdm=False,
+            lora_request=lora_request,
+        )
+
+        continuations = [output.outputs[0].text for output in outputs]
+
+        # Put vLLM back to sleep if needed
+        if getattr(self.args, "vllm_enable_sleep_mode", False):
+            self.llm.sleep(level=1)
+
+        return continuations
+
+    # ── Metrics ──
+
+    def log(self, logs, start_time=None):
+        if self._cot_total_count > 0:
+            logs["cot_editing/edited_ratio"] = self._cot_edit_count / self._cot_total_count
+            logs["cot_editing/regen_count"] = self._cot_edit_count
+        self._cot_edit_count = 0
+        self._cot_total_count = 0
+
+        # Inject original (pre-edit) completions into wandb table, but only
+        # when the custom table path is already active (reward fns populated
+        # _reward_metadata). Avoids accidentally activating the custom path.
+        has_reward_meta = bool(self._reward_metadata)
+        if self._cot_original_completions and has_reward_meta:
+            self._reward_metadata["original_completion"].extend(self._cot_original_completions)
+        self._cot_original_completions.clear()
+
+        super().log(logs, start_time)
+
+
 def run_grpo(
     *,
     train_dataset,
@@ -146,6 +361,8 @@ def run_grpo(
     wandb_config_extra: dict | None = None,
     # Extra dataset columns to log in wandb completions table
     extra_log_columns: list[str] | None = None,
+    # CoT editing strategy (None = no editing)
+    cot_strategy: CotEditingStrategy | None = None,
 ):
     """Run GRPO training with the given dataset and reward function.
 
@@ -188,6 +405,8 @@ def run_grpo(
         wandb_run_name: Optional W&B run name (auto-generated if None).
         wandb_config_extra: Extra key-value pairs to log to W&B config
             (e.g. hint type, eval order).
+        extra_log_columns: Dataset columns to include in wandb completions table.
+        cot_strategy: CoT editing strategy instance (None = no editing).
     """
     os.environ.setdefault("WANDB_PROJECT", wandb_project)
 
@@ -270,7 +489,8 @@ def run_grpo(
     )
 
     # ── Trainer ──
-    trainer = GRPOTrainerWithExtraCols(
+    trainer_cls = GRPOTrainerWithCotEditing if cot_strategy else GRPOTrainerWithExtraCols
+    trainer_kwargs = dict(
         model=model,
         processing_class=tokenizer,
         reward_funcs=[reward_fn],
@@ -278,8 +498,15 @@ def run_grpo(
         train_dataset=train_dataset,
         extra_log_columns=extra_log_columns,
     )
+    if cot_strategy:
+        trainer_kwargs["cot_strategy"] = cot_strategy
+        print(f"CoT editing: strategy={cot_strategy.name}")
+    trainer = trainer_cls(**trainer_kwargs)
 
     # Log extra config to wandb (after trainer init creates the run)
+    wandb_config_extra = wandb_config_extra or {}
+    if cot_strategy:
+        wandb_config_extra["cot_strategy"] = cot_strategy.name
     if wandb_config_extra:
         try:
             import wandb
