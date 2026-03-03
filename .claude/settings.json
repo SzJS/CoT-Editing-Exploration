@@ -1,0 +1,10 @@
+{
+  "enabledPlugins": {
+    "autopilot@alignment-hive": true,
+    "hive-mind@alignment-hive": true,
+    "remote-kernels@alignment-hive": true
+  },
+  "pluginMarketplaces": {
+    "alignment-hive": "Crazytieguy/alignment-hive"
+  }
+}
