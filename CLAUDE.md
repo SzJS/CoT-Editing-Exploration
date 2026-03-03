@@ -1,3 +1,13 @@
+## Self-Maintenance
+
+- **Keep CLAUDE.md current**: When you add new files, modules, commands, or conventions, update the relevant sections of this file (Architecture, Commands, Key Conventions, etc.) in the same commit.
+- **Experiment log**: Append new experiment rows after each completed training run.
+- **Don't let docs drift**: If you rename, move, or delete a file mentioned here, update the reference.
+
+## Ad-hoc Scripts
+
+Only `/tmp/claude-execution-allowed/cot-editing-exploration/` is approved for ad-hoc scripts. Non-bash scripts run with `uv run /tmp/claude-execution-allowed/cot-editing-exploration/<script-name>`. Bash scripts run with `bash /tmp/claude-execution-allowed/cot-editing-exploration/<script-name>`.
+
 ## Workflow Orchestration
 
 ### 1. Plan Mode Default
@@ -58,20 +68,30 @@
 ### Research Goal
 Study whether CoT editing methods can influence RL exploration in LLMs -- decrease exploration (prevent reward hacking) or increase it (prevent exploration collapse). Phase 1 replicated the reward hacking environment from [ariahw/rl-rewardhacking](https://github.com/ariahw/rl-rewardhacking). Phase 2 uses **Impossible-LiveCodeBench** (`fjzzq2002/impossible_livecodebench`) for unambiguous reward hacking detection.
 
+**Current focus: ImpossibleBench only.** Steering (Phase 1) is complete and not actively used. All new experiments use `src/impossible/`.
+
 ### Architecture
 - **`src/common/`** - Shared infrastructure
-  - `training.py` - Shared GRPO training loop (`run_grpo()`)
+  - `training.py` - Shared GRPO training loop (`run_grpo()`), `GRPOTrainerWithCotEditing` subclass
   - `rewards.py` - Shared reward utilities (`_strip_think_blocks`, `_evaluator`, constants)
+  - `cot_editing.py` - CoT editing strategies (prefill, insertion, resampling) for training
+  - `judge.py` - `SelfAssessmentJudge`: async vLLM-based judge for reward hacking detection
   - `vendor/` - Vendored from rl-rewardhacking (evaluator, helpers)
-- **`src/steering/`** - Steering (LeetCode reward hacking) experiments
+- **`src/steering/`** - Steering (LeetCode reward hacking) experiments [Phase 1, complete]
   - `train.py` - Entry point: `uv run python -m steering.train`
   - `rewards.py` - Steering-specific reward functions (hint-based evaluation)
   - `data.py` - Steering dataset loading (rl-rewardhacking hints), TRL formatting
   - `hints.py` - Hint/loophole definitions (moved from vendor)
-- **`src/impossible/`** - ImpossibleBench (competitive programming) experiments
+- **`src/impossible/`** - ImpossibleBench (competitive programming) experiments [Phase 2, active]
   - `train.py` - Entry point: `uv run python -m impossible.train`
-  - `rewards.py` - ImpossibleBench reward functions (subprocess evaluation)
-  - `data.py` - ImpossibleBench dataset loading, TRL formatting
+  - `rewards.py` - ImpossibleBench reward functions (subprocess evaluation, 5-way classification)
+  - `data.py` - ImpossibleBench dataset loading, TRL formatting, hint templates (~20 types)
+  - `evaluate.py` - Inspect AI evaluation harness
+  - `eval_cot.py` - Inference-time CoT editing evaluation (prefill/insertion/resampling via vLLM)
+  - `probe_hint.py` - Hint interpretation probe: asks model if prompt encourages/permits/discourages check() redefinition, with logprobs
+  - `self_assess.py` - Self-assessment CLI: batch judge completions for reward hacking via `SelfAssessmentJudge`
+- **`scripts/`** - Shell scripts for batch experiments
+  - `run_cot_diag.sh` - Diagnostic runs for all 3 CoT editing strategies + baseline
 - **`src/rl-rewardhacking/`** - Git submodule (datasets only at `results/data/*.jsonl`)
 - **`results/runs/`** - Training checkpoints
 
@@ -107,7 +127,7 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
   - 50/50 mix: 103 impossible (downsampled from conflicting+oneoff) + 103 benign (original)
   - Prompt includes full test code so model can see (and potentially hack) the tests
   - Reward eval: asymmetric subprocess execution — mutated tests use `test_first` order (model can overwrite `check()` for hack detection), GT tests use `model_first` order (test harness overwrites model's `check()` for true correctness)
-  - **Hint types** (exploit discoverability ladder): `none` (default), `check_override`, `check_override_detailed`, `check_override_aware`, `modify_check`, `incontext_check`
+  - **Hint types** (exploit discoverability ladder, ~20 types defined in `data.py:_HINT_TEMPLATES`): from subtle (`none`, `check_override`) through mechanism-explaining (`explain_mechanism`, `explain_eval`, `pass_semantics`) to explicit instruction (`instruct_override`, `instruct_append`, `instruct_system`, `fewshot_exploit`). See `data.py` for the full list.
   - **Prompt length strategy**: prompts range from ~150 to ~21k tokens. Examples exceeding `max_seq_length - max_completion_length` are filtered at load time (drops ~5 rows from 2 extreme tasks). `max_seq_length=12288` to accommodate 95%+ of problems with room for completion. `mask_truncated_completions=True` as safety net.
 - **Steering** (`uv run python -m steering.train`): Original rl-rewardhacking LeetCode problems with hint loopholes
   - Phase 1 dataset; `simple_overwrite_tests` hint tells model about `run_tests()`
@@ -206,10 +226,21 @@ bash setup.sh
 uv run python -m impossible.train                                    # full run
 uv run python -m impossible.train --max_steps=10                     # debug run
 uv run python -m impossible.train --disable_thinking --max_completion_length=1536  # nothink baseline
+uv run python -m impossible.train --cot_strategy=prefill --cot_prefill_text="..." # CoT editing
 
 # Training — Steering (LeetCode reward hacking)
 uv run python -m steering.train
 uv run python -m steering.train --max_steps=50 --output_dir=results/runs/debug
+
+# Hint interpretation probe (requires vLLM or OpenRouter)
+uv run python -m impossible.probe_hint --hint=none,check_override --n_problems=20
+uv run python -m impossible.probe_hint --hint=none,check_override --n_problems=2 --dry_run
+
+# Self-assessment judge (requires vLLM)
+uv run python -m impossible.self_assess --input=results/eval/completions.json --output=results/eval/self_assess.json
+
+# CoT editing diagnostic runs (all 3 strategies + baseline, 2 steps each)
+bash scripts/run_cot_diag.sh
 
 # Evaluation — Steering baseline (requires vLLM server on port 8000)
 VLLM_BASE_URL=http://localhost:8000/v1 PYTHONPATH=src inspect eval src/steering/evaluate.py --model vllm/Qwen/Qwen3-4B

@@ -128,6 +128,7 @@ class GRPOTrainerWithCotEditing(GRPOTrainerWithExtraCols):
         self._cot_total_count = 0
         gen_bs = self.args.generation_batch_size
         self._cot_original_completions = deque(maxlen=gen_bs)
+        self._cot_prefill_texts = deque(maxlen=gen_bs)
 
     # ── Generation override ──
 
@@ -167,6 +168,9 @@ class GRPOTrainerWithCotEditing(GRPOTrainerWithExtraCols):
         self._cot_edit_count += edited
         self._cot_total_count += len(prompts_text)
 
+        # Store prefill text for wandb completions table
+        self._cot_prefill_texts.extend([self._cot_strategy.text] * len(prompts_text))
+
         # Pass pre-templated strings to parent — strings flow through
         # maybe_apply_chat_template unchanged (is_conversational=False)
         return super()._generate_single_turn(prompts_text, images)
@@ -182,9 +186,6 @@ class GRPOTrainerWithCotEditing(GRPOTrainerWithExtraCols):
         completions_text = self.processing_class.batch_decode(
             completion_ids, skip_special_tokens=True
         )
-        # NOTE: stores local (ungathered) completions. On multi-GPU, wrap with
-        # gather_object(completions_text) to match gathered _reward_metadata columns.
-        self._cot_original_completions.extend(completions_text)
         prompts_text = [
             maybe_apply_chat_template({"prompt": p}, self.processing_class)["prompt"]
             for p in prompts
@@ -204,6 +205,7 @@ class GRPOTrainerWithCotEditing(GRPOTrainerWithExtraCols):
         self._cot_total_count += len(decisions)
 
         if not regen_indices:
+            self._cot_original_completions.extend(["[UNCHANGED]"] * len(completions_text))
             return prompt_ids, completion_ids, logprobs, fwd_kw
 
         # Build extended prompts and compute per-prompt continuation budgets
@@ -230,6 +232,7 @@ class GRPOTrainerWithCotEditing(GRPOTrainerWithExtraCols):
             valid_regen_indices.append(i)
 
         if not valid_regen_indices:
+            self._cot_original_completions.extend(["[UNCHANGED]"] * len(completions_text))
             return prompt_ids, completion_ids, logprobs, fwd_kw
 
         # Batch-regenerate continuations (per-prompt max_tokens)
@@ -245,6 +248,13 @@ class GRPOTrainerWithCotEditing(GRPOTrainerWithExtraCols):
             if len(new_tokens) > self.max_completion_length:
                 new_tokens = new_tokens[: self.max_completion_length]
             completion_ids[idx] = new_tokens
+
+        # Store original completions: [UNCHANGED] for unedited, full text for edited
+        edited_set = set(valid_regen_indices)
+        self._cot_original_completions.extend(
+            ct if i in edited_set else "[UNCHANGED]"
+            for i, ct in enumerate(completions_text)
+        )
 
         # Force logprobs recomputation (text was edited)
         return prompt_ids, completion_ids, None, fwd_kw
@@ -319,6 +329,10 @@ class GRPOTrainerWithCotEditing(GRPOTrainerWithExtraCols):
         if self._cot_original_completions and has_reward_meta:
             self._reward_metadata["original_completion"].extend(self._cot_original_completions)
         self._cot_original_completions.clear()
+
+        if self._cot_prefill_texts and has_reward_meta:
+            self._reward_metadata["cot_prefill"].extend(self._cot_prefill_texts)
+        self._cot_prefill_texts.clear()
 
         super().log(logs, start_time)
 
