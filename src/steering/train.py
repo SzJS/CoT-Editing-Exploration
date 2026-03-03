@@ -23,6 +23,7 @@ def train(
     cot_prefill_text: str | None = None,
     cot_insertion_text: str | None = None,
     cot_insertion_probability: float = 1.0,
+    cot_insertion_concentration: float = 2.0,
     cot_resampling_patterns: str | None = None,
     # Shared training params (explicit for fire.Fire CLI introspection)
     model_name: str = "Qwen/Qwen3-4B",
@@ -66,6 +67,7 @@ def train(
         cot_prefill_text: Text to prepend in think block (for prefill strategy).
         cot_insertion_text: Text to insert at sentence boundary (for insertion strategy).
         cot_insertion_probability: Probability of inserting per completion (0.0-1.0).
+        cot_insertion_concentration: Bell-curve peakedness for insertion point (0=uniform, 2=moderate, 4=strong).
         cot_resampling_patterns: Comma-separated regex patterns (for resampling strategy).
         disable_thinking: Disable Qwen3 thinking mode for nothink baseline.
         wandb_project: W&B project name.
@@ -80,6 +82,7 @@ def train(
         prefill_text=cot_prefill_text,
         insertion_text=cot_insertion_text,
         insertion_probability=cot_insertion_probability,
+        insertion_concentration=cot_insertion_concentration,
         resampling_patterns=cot_resampling_patterns.split(",") if cot_resampling_patterns else None,
     )
 

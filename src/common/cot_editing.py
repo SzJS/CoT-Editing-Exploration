@@ -13,6 +13,7 @@ text starts with the think content directly (no ``<think>`` tag) and contains
 
 from __future__ import annotations
 
+import math
 import random
 import re
 from dataclasses import dataclass, field
@@ -21,6 +22,23 @@ from dataclasses import dataclass, field
 
 # Sentence boundary: period/question/exclamation followed by space or newline
 _SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.?!])(?:\s)")
+
+
+def _middle_biased_weights(n: int, concentration: float = 1.0) -> list[float]:
+    """Compute bell-curve weights that peak at the middle of *n* items.
+
+    Uses ``sin(pi * (i + 0.5) / n) ** concentration`` so that:
+    - concentration=0 → uniform (equivalent to random.choice)
+    - concentration=1 → gentle bell
+    - concentration=2 → moderate bell (middle ~6× more likely than edges)
+    - concentration=4 → strongly peaked
+
+    The ``(i + 0.5)/n`` offset avoids sin(0)=0 at the endpoints, giving
+    first/last items small but nonzero weight.
+    """
+    if n <= 1:
+        return [1.0]
+    return [math.sin(math.pi * (i + 0.5) / n) ** concentration for i in range(n)]
 
 
 def find_sentence_boundaries(text: str) -> list[int]:
@@ -172,6 +190,7 @@ class SentenceInsertionStrategy(CotEditingStrategy):
 
     text: str = ""
     probability: float = 1.0
+    concentration: float = 2.0
 
     @property
     def name(self) -> str:
@@ -193,8 +212,9 @@ class SentenceInsertionStrategy(CotEditingStrategy):
         if not boundaries:
             return {"action": "none", "original": completion_text}
 
-        # Pick a random sentence boundary
-        boundary = random.choice(boundaries)
+        # Pick a sentence boundary, biased toward the middle
+        weights = _middle_biased_weights(len(boundaries), self.concentration)
+        boundary = random.choices(boundaries, weights=weights, k=1)[0]
         cut_pos = content_start + boundary
         prefix = completion_text[:cut_pos]
         return {
@@ -277,6 +297,7 @@ def make_cot_strategy(
     prefill_text: str | None = None,
     insertion_text: str | None = None,
     insertion_probability: float = 1.0,
+    insertion_concentration: float = 2.0,
     resampling_patterns: list[str] | None = None,
 ) -> CotEditingStrategy | None:
     """Create a CoT editing strategy from CLI arguments.
@@ -294,7 +315,10 @@ def make_cot_strategy(
     if name == "insertion":
         if not insertion_text:
             raise ValueError("--cot_insertion_text required for insertion strategy")
-        return SentenceInsertionStrategy(text=insertion_text, probability=insertion_probability)
+        return SentenceInsertionStrategy(
+            text=insertion_text, probability=insertion_probability,
+            concentration=insertion_concentration,
+        )
 
     if name == "resampling":
         patterns = resampling_patterns or list(DEFAULT_HACKING_PATTERNS)

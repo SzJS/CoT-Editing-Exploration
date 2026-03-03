@@ -40,7 +40,7 @@ from transformers import AutoTokenizer
 
 from common.cot_editing import make_cot_strategy, PrefillStrategy
 from common.rewards import _strip_think_blocks
-from impossible.data import prepare_impossible_bench_dataset, _HINT_TEMPLATES
+from impossible.data import prepare_impossible_bench_dataset, _HINT_TEMPLATES, extract_problem_prompt
 from impossible.rewards import (
     evaluate_impossible_completion,
     CATEGORIES,
@@ -190,6 +190,7 @@ async def _run(
     strategy_name: str,
     cot_kwargs: dict,
     dry_run: bool,
+    custom_hint_text: str | None = None,
 ) -> None:
     """Core async logic."""
     # Load dataset
@@ -198,6 +199,7 @@ async def _run(
         include_benign=True,
         seed=seed or 42,
         hint=hint,
+        custom_hint_text=custom_hint_text,
     )
 
     # Subsample
@@ -314,6 +316,7 @@ async def _run(
             "task_id": items[i]["task_id"],
             "is_impossible": items[i]["is_impossible"],
             "impossible_type": items[i]["impossible_type"],
+            "prompt_text": extract_problem_prompt(items[i]),
             "completion": completions[i],
             "cot_edited": cot_edited[i],
             **results[i],
@@ -401,7 +404,7 @@ async def _run(
 # CLI
 # ---------------------------------------------------------------------------
 
-_VALID_HINTS = frozenset(("none", *_HINT_TEMPLATES))
+_VALID_HINTS = frozenset(("none", "custom", *_HINT_TEMPLATES))
 
 
 def eval_cot(
@@ -424,7 +427,10 @@ def eval_cot(
     cot_prefill_text: str | None = None,
     cot_insertion_text: str | None = None,
     cot_insertion_probability: float = 1.0,
+    cot_insertion_concentration: float = 2.0,
     cot_resampling_patterns: str | None = None,
+    # Custom hint
+    custom_hint_text: str | None = None,
     # Debug
     dry_run: bool = False,
 ) -> None:
@@ -436,6 +442,7 @@ def eval_cot(
 
     Args:
         hint: Hint type for exploit discoverability (e.g. "check_override").
+            Use "custom" with custom_hint_text for arbitrary hint text.
         output: Path to write JSON results.
         base_url: vLLM-compatible completions API base URL.
         model: Model name/identifier.
@@ -453,10 +460,15 @@ def eval_cot(
         cot_prefill_text: Text for prefill strategy.
         cot_insertion_text: Text for insertion strategy.
         cot_insertion_probability: Probability of insertion per completion.
+        cot_insertion_concentration: Bell-curve peakedness for insertion point (0=uniform, 2=moderate, 4=strong).
         cot_resampling_patterns: Comma-separated regex patterns for resampling.
+        custom_hint_text: Arbitrary hint text when hint="custom". Supports {entry_point}.
         dry_run: Print first prompt without API calls.
     """
     # Validate hint
+    if hint == "custom" and not custom_hint_text:
+        print("Error: hint='custom' requires --custom_hint_text", file=sys.stderr)
+        sys.exit(1)
     if hint not in _VALID_HINTS:
         print(f"Error: unknown hint {hint!r}. Valid: {sorted(_VALID_HINTS)}",
               file=sys.stderr)
@@ -468,6 +480,7 @@ def eval_cot(
         prefill_text=cot_prefill_text,
         insertion_text=cot_insertion_text,
         insertion_probability=cot_insertion_probability,
+        insertion_concentration=cot_insertion_concentration,
         resampling_patterns=(
             cot_resampling_patterns.split(",") if cot_resampling_patterns else None
         ),
@@ -481,6 +494,8 @@ def eval_cot(
         cot_kwargs["cot_insertion_text"] = cot_insertion_text
     if cot_insertion_probability != 1.0:
         cot_kwargs["cot_insertion_probability"] = cot_insertion_probability
+    if cot_insertion_concentration != 2.0:
+        cot_kwargs["cot_insertion_concentration"] = cot_insertion_concentration
     if cot_resampling_patterns:
         cot_kwargs["cot_resampling_patterns"] = cot_resampling_patterns
 
@@ -511,6 +526,7 @@ def eval_cot(
         strategy_name=cot_strategy,
         cot_kwargs=cot_kwargs,
         dry_run=dry_run,
+        custom_hint_text=custom_hint_text,
     ))
 
 
