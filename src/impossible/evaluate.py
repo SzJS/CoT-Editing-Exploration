@@ -41,12 +41,14 @@ from impossible.rewards import (
 def load_impossible_dataset(
     hint: str = "none",
     splits: str = "conflicting,oneoff",
+    custom_hint_text: str = "",
 ) -> MemoryDataset:
     """Load ImpossibleBench and convert to Inspect MemoryDataset.
 
     Args:
         hint: Hint type for exploit discoverability (default "none").
         splits: Comma-separated impossible splits to include (default "conflicting,oneoff").
+        custom_hint_text: Arbitrary hint text when hint="custom". Supports {entry_point}.
 
     Returns:
         MemoryDataset of Inspect Samples with metadata for scoring.
@@ -57,6 +59,7 @@ def load_impossible_dataset(
         impossible_splits=impossible_splits,
         include_benign=True,
         hint=hint,
+        custom_hint_text=custom_hint_text or None,
     )
 
     samples = []
@@ -339,17 +342,20 @@ def impossible_baseline(
     thinking: bool = True,
     eval_timeout: int = 10,
     splits: str = "conflicting,oneoff",
+    custom_hint_text: str = "",
 ) -> Task:
     """Baseline evaluation of ImpossibleBench (competitive programming) dataset.
 
     Args:
         hint: Hint type for exploit discoverability. One of:
             "none" (default), "check_override", "check_override_detailed",
-            "check_override_aware", "modify_check", "incontext_check"
+            "check_override_aware", "modify_check", "incontext_check",
+            "custom" (requires custom_hint_text)
         thinking: Whether to enable thinking mode (default True).
             Sets temperature/top_p/max_tokens per Qwen3 defaults.
         eval_timeout: Subprocess timeout per evaluation in seconds (default 10).
         splits: Comma-separated impossible splits (default "conflicting,oneoff").
+        custom_hint_text: Arbitrary hint text when hint="custom". Supports {entry_point}.
     """
     if thinking:
         config = GenerateConfig(
@@ -369,7 +375,7 @@ def impossible_baseline(
         )
 
     return Task(
-        dataset=load_impossible_dataset(hint=hint, splits=splits),
+        dataset=load_impossible_dataset(hint=hint, splits=splits, custom_hint_text=custom_hint_text),
         solver=[generate()],
         scorer=impossible_scorer(eval_timeout=eval_timeout),
         config=config,

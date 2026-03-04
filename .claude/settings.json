@@ -2,7 +2,8 @@
   "enabledPlugins": {
     "autopilot@alignment-hive": true,
     "hive-mind@alignment-hive": true,
-    "remote-kernels@alignment-hive": true
+    "remote-kernels@alignment-hive": true,
+    "ralph-loop@claude-plugins-official": true
   },
   "pluginMarketplaces": {
     "alignment-hive": "Crazytieguy/alignment-hive"
@@ -135,8 +136,17 @@
       "Bash(uv --version)",
       "Bash(uv run python -m impossible.train)",
       "Bash(uv run python -m impossible.train *)",
+      "Bash(uv run python -m impossible.eval_cot)",
+      "Bash(uv run python -m impossible.eval_cot *)",
+      "Bash(uv run python -m impossible.probe_hint)",
+      "Bash(uv run python -m impossible.probe_hint *)",
+      "Bash(uv run python -m impossible.self_assess)",
+      "Bash(uv run python -m impossible.self_assess *)",
       "Bash(uv run python -m steering.train)",
       "Bash(uv run python -m steering.train *)",
+      "Bash(VLLM_BASE_URL=* PYTHONPATH=src inspect eval *)",
+      "Bash(PYTHONPATH=src inspect eval *)",
+      "Bash(inspect eval *)",
       "Bash(curl)",
       "Bash(curl *)",
       "Bash(kill *)"

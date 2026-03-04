@@ -45,7 +45,7 @@ import fire
 from openai import AsyncOpenAI
 
 from common.rewards import _strip_think_blocks
-from impossible.data import prepare_impossible_bench_dataset, _HINT_TEMPLATES
+from impossible.data import prepare_impossible_bench_dataset, _HINT_TEMPLATES, extract_problem_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -222,12 +222,6 @@ async def _probe_one(
     return result
 
 
-def _extract_problem_prompt(item: dict) -> str:
-    """Extract user-facing prompt text from a dataset item."""
-    user_msgs = [m["content"] for m in item["prompt"] if m["role"] == "user"]
-    return "\n\n".join(str(m) for m in user_msgs)
-
-
 async def _run(
     hints: list[str],
     output: str,
@@ -241,6 +235,7 @@ async def _run(
     seed: int,
     extra_headers: dict | None,
     dry_run: bool,
+    custom_hint_text: str | None = None,
 ) -> None:
     """Core async logic: load problems, probe each hint, write results."""
     if not dry_run:
@@ -265,6 +260,7 @@ async def _run(
             include_benign=True,
             seed=seed,
             hint=hint,
+            custom_hint_text=custom_hint_text if hint == "custom" else None,
         )
 
         # Sample n_problems (deterministic via seed — same problems across hints
@@ -281,7 +277,7 @@ async def _run(
         print(f"  Probing {len(items)} problems")
 
         # Build problem prompt text from the chat messages
-        problem_prompts = [_extract_problem_prompt(item) for item in items]
+        problem_prompts = [extract_problem_prompt(item) for item in items]
 
         # Dry run: print prompts and skip API calls
         if dry_run:
@@ -475,7 +471,7 @@ async def _run(
 # CLI
 # ---------------------------------------------------------------------------
 
-_VALID_HINTS = frozenset(("none", *_HINT_TEMPLATES))
+_VALID_HINTS = frozenset(("none", "custom", *_HINT_TEMPLATES))
 
 
 def probe_hint(
@@ -489,6 +485,7 @@ def probe_hint(
     max_tokens: int = 4096,
     splits: str = "conflicting,oneoff",
     seed: int = 42,
+    custom_hint_text: str | None = None,
     dry_run: bool = False,
 ) -> None:
     """Probe how a model interprets ImpossibleBench hints.
@@ -499,6 +496,7 @@ def probe_hint(
 
     Args:
         hint: Comma-separated hint types to probe (e.g. "check_override,warn_exploit").
+            Use "custom" with custom_hint_text for arbitrary hint text.
         output: Path to write JSON results.
         base_url: OpenAI-compatible API base URL (vLLM or OpenRouter).
         model: Model name/identifier.
@@ -508,6 +506,7 @@ def probe_hint(
         max_tokens: Max tokens for model response.
         splits: Comma-separated impossible splits (default "conflicting,oneoff").
         seed: Random seed for problem sampling.
+        custom_hint_text: Arbitrary hint text when hint includes "custom". Supports {entry_point}.
         dry_run: Print formatted prompts without calling the API.
     """
     hints = [h.strip() for h in hint.split(",")]
@@ -517,6 +516,9 @@ def probe_hint(
         if h not in _VALID_HINTS:
             print(f"Error: unknown hint {h!r}. Valid hints: {sorted(_VALID_HINTS)}", file=sys.stderr)
             sys.exit(1)
+    if "custom" in hints and not custom_hint_text:
+        print("Error: hint='custom' requires --custom_hint_text", file=sys.stderr)
+        sys.exit(1)
 
     api_key = "unused"
     if api_key_env:
@@ -546,6 +548,7 @@ def probe_hint(
         seed=seed,
         extra_headers=extra_headers,
         dry_run=dry_run,
+        custom_hint_text=custom_hint_text,
     ))
 
 

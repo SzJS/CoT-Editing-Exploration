@@ -85,7 +85,7 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 - **`src/impossible/`** - ImpossibleBench (competitive programming) experiments [Phase 2, active]
   - `train.py` - Entry point: `uv run python -m impossible.train`
   - `rewards.py` - ImpossibleBench reward functions (subprocess evaluation, 5-way classification)
-  - `data.py` - ImpossibleBench dataset loading, TRL formatting, hint templates (~20 types)
+  - `data.py` - ImpossibleBench dataset loading, TRL formatting, hint templates (~20 types), custom hint support (`hint="custom"` + `custom_hint_text`)
   - `evaluate.py` - Inspect AI evaluation harness
   - `eval_cot.py` - Inference-time CoT editing evaluation (prefill/insertion/resampling via vLLM)
   - `probe_hint.py` - Hint interpretation probe: asks model if prompt encourages/permits/discourages check() redefinition, with logprobs
@@ -235,9 +235,18 @@ uv run python -m steering.train --max_steps=50 --output_dir=results/runs/debug
 # Hint interpretation probe (requires vLLM or OpenRouter)
 uv run python -m impossible.probe_hint --hint=none,check_override --n_problems=20
 uv run python -m impossible.probe_hint --hint=none,check_override --n_problems=2 --dry_run
+uv run python -m impossible.probe_hint --hint=custom --custom_hint_text="# Your hint here" --n_problems=20
 
 # Self-assessment judge (requires vLLM)
 uv run python -m impossible.self_assess --input=results/eval/completions.json --output=results/eval/self_assess.json
+
+# Inspect eval → self_assess glue (reads Inspect log, strips CoT, extracts prompt)
+uv run /tmp/claude-execution-allowed/cot-editing-exploration/eval_to_self_assess.py path/to/log.eval results/eval/sa_input.json
+uv run /tmp/claude-execution-allowed/cot-editing-exploration/eval_to_self_assess.py --log-dir logs/ results/eval/sa_input.json
+
+# Custom hint eval (arbitrary hint text, via Inspect AI)
+VLLM_BASE_URL=http://localhost:8000/v1 PYTHONPATH=src inspect eval src/impossible/evaluate.py \
+    --model vllm/Qwen/Qwen3-4B -T hint=custom -T custom_hint_text="# Your hint" --limit 10
 
 # CoT editing diagnostic runs (all 3 strategies + baseline, 2 steps each)
 bash scripts/run_cot_diag.sh
