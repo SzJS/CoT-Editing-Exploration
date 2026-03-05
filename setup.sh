@@ -37,7 +37,7 @@ echo "uv: $(uv --version)"
 if ! command -v claude &>/dev/null; then
     echo "Installing Claude Code..."
     curl -fsSL https://claude.ai/install.sh | bash
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
+    export PATH="$HOME/.local/bin:$PATH"
 fi
 echo "claude: $(claude --version)"
 
@@ -56,6 +56,11 @@ git submodule update --init --recursive
 # ── 7. Install project dependencies ──
 echo "Installing dependencies with uv..."
 cd "$PROJECT_DIR"
+# Remove stale .venv to avoid NFS "stale file handle" errors on re-runs
+if [ -d .venv ]; then
+    echo "Removing existing .venv (avoids stale NFS handles)..."
+    rm -rf .venv
+fi
 UV_LINK_MODE=copy uv sync
 
 # ── 8. Create claude-user for running Claude Code ──
