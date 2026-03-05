@@ -40,7 +40,8 @@ from transformers import AutoTokenizer
 
 from common.cot_editing import make_cot_strategy, PrefillStrategy
 from common.rewards import _strip_think_blocks
-from impossible.data import prepare_impossible_bench_dataset, _HINT_TEMPLATES, extract_problem_prompt
+from impossible.data import prepare_impossible_bench_dataset, extract_problem_prompt
+from impossible.hints import HINT_TEMPLATES
 from impossible.rewards import (
     evaluate_impossible_completion,
     CATEGORIES,
@@ -404,7 +405,7 @@ async def _run(
 # CLI
 # ---------------------------------------------------------------------------
 
-_VALID_HINTS = frozenset(("none", "custom", *_HINT_TEMPLATES))
+_VALID_HINTS = frozenset(("none", "custom", *HINT_TEMPLATES))
 
 
 def eval_cot(

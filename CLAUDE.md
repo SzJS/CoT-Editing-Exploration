@@ -85,7 +85,8 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 - **`src/impossible/`** - ImpossibleBench (competitive programming) experiments [Phase 2, active]
   - `train.py` - Entry point: `uv run python -m impossible.train`
   - `rewards.py` - ImpossibleBench reward functions (subprocess evaluation, 5-way classification)
-  - `data.py` - ImpossibleBench dataset loading, TRL formatting, hint templates (~20 types), custom hint support (`hint="custom"` + `custom_hint_text`)
+  - `data.py` - ImpossibleBench dataset loading, TRL formatting, system prompt, custom hint support (`hint="custom"` + `custom_hint_text`)
+  - `hints.py` - Hint templates (~70 types, natural language) + `make_user_message()` builder
   - `evaluate.py` - Inspect AI evaluation harness
   - `eval_cot.py` - Inference-time CoT editing evaluation (prefill/insertion/resampling via vLLM)
   - `probe_hint.py` - Hint interpretation probe: asks model if prompt encourages/permits/discourages check() redefinition, with logprobs

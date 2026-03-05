@@ -45,7 +45,8 @@ import fire
 from openai import AsyncOpenAI
 
 from common.rewards import _strip_think_blocks
-from impossible.data import prepare_impossible_bench_dataset, _HINT_TEMPLATES, extract_problem_prompt
+from impossible.data import prepare_impossible_bench_dataset, extract_problem_prompt
+from impossible.hints import HINT_TEMPLATES
 
 
 # ---------------------------------------------------------------------------
@@ -471,7 +472,7 @@ async def _run(
 # CLI
 # ---------------------------------------------------------------------------
 
-_VALID_HINTS = frozenset(("none", "custom", *_HINT_TEMPLATES))
+_VALID_HINTS = frozenset(("none", "custom", *HINT_TEMPLATES))
 
 
 def probe_hint(
