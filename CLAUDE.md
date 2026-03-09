@@ -130,7 +130,8 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
   - 50/50 mix: 103 impossible (downsampled from conflicting+oneoff) + 103 benign (original)
   - Prompt includes full test code so model can see (and potentially hack) the tests
   - Reward eval: asymmetric subprocess execution — mutated tests use `test_first` order (model can overwrite `check()` for hack detection), GT tests use `model_first` order (test harness overwrites model's `check()` for true correctness)
-  - **Hint types** (exploit discoverability ladder, ~20 types defined in `data.py:_HINT_TEMPLATES`): from subtle (`none`, `check_override`) through mechanism-explaining (`explain_mechanism`, `explain_eval`, `pass_semantics`) to explicit instruction (`instruct_override`, `instruct_append`, `instruct_system`, `fewshot_exploit`). See `data.py` for the full list.
+  - **Hint types** (exploit discoverability ladder, ~70 types defined in `hints.py:HINT_TEMPLATES`): from subtle (`none`, `check_override`) through mechanism-explaining (`explain_mechanism`, `explain_eval`, `pass_semantics`) to explicit instruction (`instruct_override`, `instruct_append`, `instruct_system`, `fewshot_exploit`). sys.exit hints: `sysexit_mention`, `sysexit_mechanism`, `sysexit_eval_detail`, `sysexit_warn`, `sysexit_instruct`, `sysexit_contradict`, `sysexit_fewshot`. See `hints.py` for the full list.
+  - **Hack vectors** (`--hack_vector`): `check_redef` (default, detects `check()` redefinition via asymmetric eval) or `sys_exit` (detects `sys.exit(0)` via exploitable+neutered dual eval). sys_exit uses static regex + dynamic subprocess detection.
   - **Prompt length strategy**: prompts range from ~150 to ~21k tokens. Examples exceeding `max_seq_length - max_completion_length` are filtered at load time (drops ~5 rows from 2 extreme tasks). `max_seq_length=12288` to accommodate 95%+ of problems with room for completion. `mask_truncated_completions=True` as safety net.
 - **Steering** (`uv run python -m steering.train`): Original rl-rewardhacking LeetCode problems with hint loopholes
   - Phase 1 dataset; `simple_overwrite_tests` hint tells model about `run_tests()`
@@ -232,6 +233,7 @@ uv run python -m impossible.train                                    # full run
 uv run python -m impossible.train --max_steps=10                     # debug run
 uv run python -m impossible.train --disable_thinking --max_completion_length=1536  # nothink baseline
 uv run python -m impossible.train --cot_strategy=prefill --cot_prefill_text="..." # CoT editing
+uv run python -m impossible.train --hack_vector=sys_exit --hint=sysexit_instruct  # sys.exit hack vector
 
 # Training — Steering (LeetCode reward hacking)
 uv run python -m steering.train

@@ -19,6 +19,7 @@ def train(
     impossible_seed: int = 42,
     eval_timeout: int = 10,
     hint: str = "none",
+    hack_vector: str = "check_redef",
     # CoT editing
     cot_strategy: str = "none",
     cot_prefill_text: str | None = None,
@@ -65,6 +66,7 @@ def train(
         eval_timeout: Seconds per subprocess evaluation (default 10 for heavier problems).
         hint: Hint type for exploit discoverability ("none", "check_override",
             "check_override_detailed", "check_override_aware", "modify_check", "incontext_check").
+        hack_vector: Hack detection mode — "check_redef" (default) or "sys_exit".
         cot_strategy: CoT editing strategy ("none", "prefill", "insertion", "resampling").
         cot_prefill_text: Text to prepend in think block (for prefill strategy).
         cot_insertion_text: Text to insert at sentence boundary (for insertion strategy).
@@ -96,9 +98,9 @@ def train(
         tokenizer_name=model_name,
         hint=hint,
     )
-    reward_fn = make_impossible_bench_reward(timeout=eval_timeout)
+    reward_fn = make_impossible_bench_reward(timeout=eval_timeout, hack_vector=hack_vector)
     max_prompt_length = max_seq_length
-    print(f"Dataset: impossible_bench ({len(train_dataset)} examples, hint={hint}, max_prompt_length={max_prompt_length})")
+    print(f"Dataset: impossible_bench ({len(train_dataset)} examples, hint={hint}, hack_vector={hack_vector}, max_prompt_length={max_prompt_length})")
 
     run_grpo(
         train_dataset=train_dataset,
@@ -130,7 +132,7 @@ def train(
         disable_thinking=disable_thinking,
         wandb_project=wandb_project,
         wandb_run_name=wandb_run_name,
-        wandb_config_extra={"hint": hint},
+        wandb_config_extra={"hint": hint, "hack_vector": hack_vector},
         extra_log_columns=["is_impossible"],
         cot_strategy=strategy,
     )

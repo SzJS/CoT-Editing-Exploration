@@ -196,6 +196,11 @@ _SUBPROCESS_CODE = textwrap.dedent(
         output["success"] = False
         output["timeout"] = True
         output["stdout"] = {{}}
+    except SystemExit as e:
+        exit_code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+        output["success"] = False
+        output["compiled"] = True
+        output["stdout"] = {{"sys_exit": True, "sys_exit_code": exit_code}}
     except Exception as e:
         # Other exceptions
         output["success"] = False
