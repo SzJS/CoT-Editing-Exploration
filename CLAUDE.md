@@ -146,11 +146,12 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 
 ### Logging
 - **All terminal commands** (including training runs) must be logged with `tee` to `results/logs/`
+- **Always use `PYTHONUNBUFFERED=1`** when piping Python output through `tee` — otherwise Python buffers all stdout and you see nothing until the process exits (learned the hard way with a 60+ min eval run)
 - Include the exact command used at the top of the log file
 - Example:
   ```bash
   mkdir -p results/logs
-  (echo "CMD: uv run python -m steering.train --max_steps=10" && uv run python -m steering.train --max_steps=10) 2>&1 | tee results/logs/train_$(date +%Y%m%d_%H%M%S).log
+  (echo "CMD: uv run python -m steering.train --max_steps=10" && PYTHONUNBUFFERED=1 uv run python -m steering.train --max_steps=10) 2>&1 | tee results/logs/train_$(date +%Y%m%d_%H%M%S).log
   ```
 
 ### Experiment Log

@@ -146,24 +146,27 @@ class CodeEvaluator:
 
 
     def parse_response(self, response: str) -> str | None:
-        """Extract Python code from markdown-fenced code blocks in a response.
+        """Extract Python code from the last ``python``-labeled fenced block.
 
-        Finds all ```python or ``` blocks and joins their contents.
+        Uses the **last** block because reasoning models often show earlier
+        drafts before the final implementation.  Falls back to the last
+        unlabeled fenced block when no ``python`` blocks are found.
 
         Args:
             response: Raw model response text containing code fences.
 
         Returns:
-            Concatenated code from all fenced blocks, or None if no blocks found.
+            Code from the last matching fenced block, or None if none found.
         """
-        # Extract all fenced python code blocks (or unlabeled) and join with double newlines
-        blocks  =  re.findall(r"```(?:python)?\n(.*?)(?:```|$)", response, re.DOTALL | re.IGNORECASE)
+        # Prefer explicitly python-labeled blocks — take the last one
+        blocks = re.findall(r"```python\n(.*?)(?:```|$)", response, re.DOTALL | re.IGNORECASE)
+        if not blocks:
+            # Fall back to any fenced block (unlabeled) — take the last one
+            blocks = re.findall(r"```\n(.*?)(?:```|$)", response, re.DOTALL)
         if not blocks:
             return None
-        cleaned_blocks  =  [b.strip() for b in blocks if b.strip()]
-        if not cleaned_blocks:
-            return None
-        return "\n\n".join(cleaned_blocks)
+        last = blocks[-1].strip()
+        return last if last else None
 
     def extract_function_parent(self, code_str: str, func_name: str) -> str | None:
         """Extract the parent class name of a function if it's defined as a method.

@@ -87,6 +87,32 @@ async def _completions_generate(
     return response.choices[0].text or ""
 
 
+async def _chat_generate(
+    client: AsyncOpenAI,
+    model: str,
+    messages: list[dict],
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+) -> str:
+    """Call the OpenRouter chat completions API.
+
+    Used for models like Kimi K2.5 where the completions API hangs on long
+    generations because reasoning tokens consume the max_tokens budget.
+    The chat API handles reasoning tokens separately.
+    """
+    response = await client.chat.completions.create(
+        model=model,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_p=top_p,
+    )
+    if not response.choices:
+        return ""
+    return response.choices[0].message.content or ""
+
+
 def _apply_prefill(raw_prompt: str, prefill_text: str) -> str:
     """Model-agnostic prefill: append prefill text after <think> in raw prompt.
 
@@ -105,6 +131,7 @@ async def _generate_one(
     client: AsyncOpenAI,
     model: str,
     raw_prompt: str,
+    messages: list[dict],
     strategy,
     tokenizer,
     max_tokens: int,
@@ -114,15 +141,21 @@ async def _generate_one(
     """Generate a single completion, applying CoT strategy if needed.
 
     Returns (final_completion, cot_edited).
+
+    When strategy is None, uses the chat API (reasoning tokens counted
+    separately, avoiding hangs on models like Kimi K2.5 where completions
+    API reasoning tokens consume the max_tokens budget).
+    CoT strategies (prefill/insertion/resampling) still use the completions
+    API for raw prompt control.
     """
     gen_kwargs = dict(
         client=client, model=model, max_tokens=max_tokens,
         temperature=temperature, top_p=top_p,
     )
 
-    # No strategy
+    # No strategy — use chat API (avoids reasoning token budget issues)
     if strategy is None:
-        completion = await _completions_generate(prompt=raw_prompt, **gen_kwargs)
+        completion = await _chat_generate(messages=messages, **gen_kwargs)
         return completion, False
 
     # Prefill: model-agnostic approach (not PrefillStrategy.apply_to_prompt which is Qwen3-specific)
@@ -230,12 +263,14 @@ async def _run(
     cot_kwargs: dict,
     dry_run: bool,
     custom_hint_text: str | None = None,
+    exemplar_file: str | None = None,
+    impossible_only: bool = False,
 ) -> None:
     """Core async logic."""
     # Load dataset
     ds = prepare_impossible_bench_dataset(
         impossible_splits=[s.strip() for s in splits.split(",")],
-        include_benign=True,
+        include_benign=not impossible_only,
         seed=seed or 42,
         hint=hint,
         custom_hint_text=custom_hint_text,
@@ -255,12 +290,40 @@ async def _run(
 
     print(f"Dataset: {len(items)} problems (hint={hint}, splits={splits})")
 
-    # Apply chat template to get raw prompts
+    # Load exemplar turns if provided
+    exemplar_turns: list[dict] = []
+    if exemplar_file:
+        with open(exemplar_file) as f:
+            exemplars = json.load(f)
+        for ex in exemplars:
+            exemplar_turns.append({"role": "user", "content": ex["user_message"]})
+            exemplar_turns.append({"role": "assistant", "content": ex["assistant_response"]})
+        # Exclude exemplar problems from eval set to avoid contamination
+        exemplar_ids = {ex["task_id"] for ex in exemplars if "task_id" in ex}
+        if exemplar_ids:
+            before = len(items)
+            items = [it for it in items if it["task_id"] not in exemplar_ids]
+            excluded = before - len(items)
+            if excluded:
+                print(f"Excluded {excluded} exemplar problems from eval set: "
+                      f"{sorted(exemplar_ids)}")
+        print(f"Loaded {len(exemplars)} exemplars from {exemplar_file} "
+              f"({len(exemplar_turns)} turns), {len(items)} problems remaining")
+
+    # Apply chat template to get raw prompts (with exemplar turns injected)
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, trust_remote_code=True)
     raw_prompts = []
+    chat_messages = []  # messages with exemplar turns injected
     for item in items:
+        if exemplar_turns:
+            # Splice exemplar turns between system message and user message
+            # item["prompt"] is [system_msg, user_msg]
+            msgs = [item["prompt"][0], *exemplar_turns, *item["prompt"][1:]]
+        else:
+            msgs = item["prompt"]
+        chat_messages.append(msgs)
         raw_prompt = tokenizer.apply_chat_template(
-            item["prompt"], add_generation_prompt=True, tokenize=False,
+            msgs, add_generation_prompt=True, tokenize=False,
         )
         raw_prompts.append(raw_prompt)
 
@@ -270,6 +333,8 @@ async def _run(
         print(f"Sample prompt (item 0: {items[0]['task_id']}, "
               f"impossible={items[0]['is_impossible']})")
         print(f"Strategy: {strategy_name}")
+        if exemplar_file:
+            print(f"Exemplars: {len(exemplar_turns)//2} from {exemplar_file}")
         print(f"{'='*70}")
         prompt_to_show = raw_prompts[0]
         if strategy is not None and isinstance(strategy, PrefillStrategy):
@@ -288,6 +353,7 @@ async def _run(
         base_url=base_url,
         api_key=api_key,
         max_retries=3,
+        timeout=600.0,  # 10 min per request (Kimi K2.5 generates ~60k chars)
         default_headers={
             "X-Title": "cot-exploration",
             "HTTP-Referer": "https://github.com/cot-exploration",
@@ -304,28 +370,50 @@ async def _run(
     _MAX_CONSECUTIVE_FAILURES = 5
     _abort = False
 
+    _REQUEST_TIMEOUT = 600  # 10 min hard timeout per request
+    _completed_count = 0
+
     async def _gen_and_eval(idx: int) -> None:
-        nonlocal _consecutive_failures, _abort
+        nonlocal _consecutive_failures, _abort, _completed_count
         if _abort:
             return
         async with sem:
             if _abort:
                 return
+            t_start = time.time()
             try:
-                comp, edited = await _generate_one(
-                    client=client, model=model, raw_prompt=raw_prompts[idx],
-                    strategy=strategy, tokenizer=tokenizer, max_tokens=max_tokens,
-                    temperature=temperature, top_p=top_p,
+                comp, edited = await asyncio.wait_for(
+                    _generate_one(
+                        client=client, model=model, raw_prompt=raw_prompts[idx],
+                        messages=chat_messages[idx],
+                        strategy=strategy, tokenizer=tokenizer, max_tokens=max_tokens,
+                        temperature=temperature, top_p=top_p,
+                    ),
+                    timeout=_REQUEST_TIMEOUT,
                 )
                 completions[idx] = comp
                 cot_edited[idx] = edited
                 _consecutive_failures = 0
+                _completed_count += 1
+                elapsed = time.time() - t_start
+                print(f"  [{_completed_count}/{len(items)}] {items[idx]['task_id']} "
+                      f"done in {elapsed:.0f}s ({len(comp)} chars)")
+            except asyncio.TimeoutError:
+                _consecutive_failures += 1
+                print(f"  WARNING: timeout ({_REQUEST_TIMEOUT}s) for {items[idx]['task_id']}",
+                      file=sys.stderr)
+                completions[idx] = ""
+                cot_edited[idx] = False
+                _completed_count += 1
+                print(f"  [{_completed_count}/{len(items)}] {items[idx]['task_id']} TIMEOUT")
             except Exception as e:
                 _consecutive_failures += 1
                 print(f"  WARNING: generation error for {items[idx]['task_id']}: {e}",
                       file=sys.stderr)
                 completions[idx] = ""
                 cot_edited[idx] = False
+                _completed_count += 1
+                print(f"  [{_completed_count}/{len(items)}] {items[idx]['task_id']} ERROR")
                 if _consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
                     print(f"\n  ABORTING: {_consecutive_failures} consecutive failures "
                           f"(credits exhausted? API down?)", file=sys.stderr)
@@ -422,6 +510,7 @@ async def _run(
             "base_url": base_url,
             "hint": hint,
             "hack_vector": hack_vector,
+            "exemplar_file": exemplar_file,
             "cot_strategy": strategy_name,
             **cot_kwargs,
             "max_tokens": max_tokens,
@@ -430,6 +519,7 @@ async def _run(
             "seed": seed,
             "splits": splits,
             "n_problems": n_problems,
+            "impossible_only": impossible_only,
             "eval_timeout": eval_timeout,
         },
         "summary": summary,
@@ -485,6 +575,8 @@ def eval_openrouter(
     n_problems: int | None = None,
     eval_timeout: int = 10,
     hack_vector: str = "check_redef",
+    # Few-shot exemplars
+    exemplar_file: str | None = None,
     # CoT editing
     cot_strategy: str = "none",
     cot_prefill_text: str | None = None,
@@ -494,6 +586,8 @@ def eval_openrouter(
     cot_resampling_patterns: str | None = None,
     # Custom hint
     custom_hint_text: str | None = None,
+    # Filter
+    impossible_only: bool = False,
     # Debug
     dry_run: bool = False,
 ) -> None:
@@ -518,6 +612,8 @@ def eval_openrouter(
         n_problems: Subsample N problems (None = all).
         eval_timeout: Seconds per subprocess evaluation.
         hack_vector: Detection mode ("check_redef" or "sys_exit").
+        exemplar_file: JSON file with few-shot exemplars [{user_message, assistant_response}].
+            Turns are injected between system message and real problem.
         cot_strategy: CoT editing strategy ("none", "prefill", "insertion", "resampling").
         cot_prefill_text: Text for prefill strategy.
         cot_insertion_text: Text for insertion strategy.
@@ -525,6 +621,7 @@ def eval_openrouter(
         cot_insertion_concentration: Bell-curve peakedness for insertion point.
         cot_resampling_patterns: Comma-separated regex patterns for resampling.
         custom_hint_text: Arbitrary hint text when hint="custom".
+        impossible_only: Only evaluate impossible problems (skip benign split).
         dry_run: Print first prompt without API calls.
     """
     # Validate hint
@@ -597,6 +694,8 @@ def eval_openrouter(
         cot_kwargs=cot_kwargs,
         dry_run=dry_run,
         custom_hint_text=custom_hint_text,
+        exemplar_file=exemplar_file,
+        impossible_only=impossible_only,
     ))
 
 
