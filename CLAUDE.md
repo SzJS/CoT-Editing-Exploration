@@ -91,6 +91,8 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
   - `eval_cot.py` - Inference-time CoT editing evaluation (prefill/insertion/resampling via vLLM)
   - `probe_hint.py` - Hint interpretation probe: asks model if prompt encourages/permits/discourages check() redefinition, with logprobs
   - `self_assess.py` - Self-assessment CLI: batch judge completions for reward hacking via `SelfAssessmentJudge`
+  - `generate_rh_exemplars.py` - Generate reward-hacking exemplar completions for prefill-based CoT editing; `--verify` mode tests curated exemplars
+  - `prefill_exemplars.json` - Curated short reward-hacking exemplars for multi-turn prefill (created after manual review)
 - **`scripts/`** - Shell scripts for batch experiments
   - `run_cot_diag.sh` - Diagnostic runs for all 3 CoT editing strategies + baseline
 - **`src/rl-rewardhacking/`** - Git submodule (datasets only at `results/data/*.jsonl`)
@@ -246,6 +248,11 @@ uv run python -m impossible.self_assess --input=results/eval/completions.json --
 # Inspect eval → self_assess glue (reads Inspect log, strips CoT, extracts prompt)
 uv run /tmp/claude-execution-allowed/cot-editing-exploration/eval_to_self_assess.py path/to/log.eval results/eval/sa_input.json
 uv run /tmp/claude-execution-allowed/cot-editing-exploration/eval_to_self_assess.py --log-dir logs/ results/eval/sa_input.json
+
+# Generate reward-hacking exemplars for prefill (requires vLLM)
+uv run python -m impossible.generate_rh_exemplars --n_problems=5 --n_completions=5
+# Verify curated exemplars induce hacking on new problems
+uv run python -m impossible.generate_rh_exemplars --verify --exemplar_file=src/impossible/prefill_exemplars.json
 
 # Custom hint eval (arbitrary hint text, via Inspect AI)
 VLLM_BASE_URL=http://localhost:8000/v1 PYTHONPATH=src inspect eval src/impossible/evaluate.py \

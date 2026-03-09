@@ -42,6 +42,7 @@ def load_impossible_dataset(
     hint: str = "none",
     splits: str = "conflicting,oneoff",
     custom_hint_text: str = "",
+    max_samples: int = 0,
 ) -> MemoryDataset:
     """Load ImpossibleBench and convert to Inspect MemoryDataset.
 
@@ -60,6 +61,7 @@ def load_impossible_dataset(
         include_benign=True,
         hint=hint,
         custom_hint_text=custom_hint_text or None,
+        max_samples=max_samples if max_samples > 0 else None,
     )
 
     samples = []
@@ -343,6 +345,7 @@ def impossible_baseline(
     eval_timeout: int = 10,
     splits: str = "conflicting,oneoff",
     custom_hint_text: str = "",
+    max_samples: int = 0,
 ) -> Task:
     """Baseline evaluation of ImpossibleBench (competitive programming) dataset.
 
@@ -375,7 +378,7 @@ def impossible_baseline(
         )
 
     return Task(
-        dataset=load_impossible_dataset(hint=hint, splits=splits, custom_hint_text=custom_hint_text),
+        dataset=load_impossible_dataset(hint=hint, splits=splits, custom_hint_text=custom_hint_text, max_samples=max_samples),
         solver=[generate()],
         scorer=impossible_scorer(eval_timeout=eval_timeout),
         config=config,

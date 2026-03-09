@@ -21,6 +21,7 @@ def prepare_impossible_bench_dataset(
     tokenizer_name: str = "Qwen/Qwen3-4B",
     hint: str = "none",
     custom_hint_text: str | None = None,
+    max_samples: int | None = None,
 ) -> Dataset:
     """Load Impossible-LiveCodeBench and format for TRL GRPOTrainer.
 
@@ -131,6 +132,17 @@ def prepare_impossible_bench_dataset(
             benign_recs = rng.sample(benign_recs, target)
         records = impossible_recs + benign_recs
         print(f"Balanced: {len(impossible_recs)} impossible + {len(benign_recs)} benign = {len(records)} total")
+
+    # Further subsample if max_samples requested (balanced)
+    if max_samples is not None and len(records) > max_samples:
+        impossible_recs = [r for r in records if r["is_impossible"]]
+        benign_recs = [r for r in records if not r["is_impossible"]]
+        rng = random.Random(seed)
+        half = max_samples // 2
+        impossible_recs = rng.sample(impossible_recs, min(half, len(impossible_recs)))
+        benign_recs = rng.sample(benign_recs, min(half, len(benign_recs)))
+        records = impossible_recs + benign_recs
+        print(f"Subsampled: {len(impossible_recs)} impossible + {len(benign_recs)} benign = {len(records)} total")
 
     return Dataset.from_list(records)
 
