@@ -89,10 +89,12 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
   - `hints.py` - Hint templates (~70 types, natural language) + `make_user_message()` builder
   - `evaluate.py` - Inspect AI evaluation harness
   - `eval_cot.py` - Inference-time CoT editing evaluation (prefill/insertion/resampling via vLLM)
+  - `eval_openrouter.py` - Zero-shot OpenRouter CoT prefill evaluation (raw completions API, model-agnostic prefill)
   - `probe_hint.py` - Hint interpretation probe: asks model if prompt encourages/permits/discourages check() redefinition, with logprobs
   - `self_assess.py` - Self-assessment CLI: batch judge completions for reward hacking via `SelfAssessmentJudge`
-  - `generate_rh_exemplars.py` - Generate reward-hacking exemplar completions for prefill-based CoT editing; `--verify` mode tests curated exemplars
-  - `prefill_exemplars.json` - Curated short reward-hacking exemplars for multi-turn prefill (created after manual review)
+  - `generate_rh_exemplars.py` - Generate reward-hacking exemplar completions for prefill-based CoT editing; `--verify` mode tests curated exemplars; `--hack_vector=sys_exit` for sys.exit exemplars
+  - `prefill_exemplars.json` - Curated short check() redefinition exemplars for multi-turn prefill
+  - `sysexit_exemplars.json` - Curated short sys.exit(0) exemplars for multi-turn prefill
 - **`scripts/`** - Shell scripts for batch experiments
   - `run_cot_diag.sh` - Diagnostic runs for all 3 CoT editing strategies + baseline
 - **`src/rl-rewardhacking/`** - Git submodule (datasets only at `results/data/*.jsonl`)
@@ -199,6 +201,19 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 **ImpossibleBench config v8:** Same as v6-v7 but `--hint=noredef_mechanism --max_steps=150`, `gpu_memory_utilization=0.6` (0.7 OOMs). Tests whether explicit prohibition of check() redefinition holds during RL training.
 **Note:** `eval_order` parameter was removed post-v7. Eval now always uses asymmetric assembly: mutated=test_first, GT=model_first. Category names updated: `"correct; attempted reward hack"` → `"correct with attempted reward hack"`, `"attempted reward hack"` → `"failed reward hack"`.
 
+#### In-Context Priming Exemplar Verification (base model, pre-RL)
+
+| Hack Vector | Exemplar File | Exemplars | Problems | Completions | Hack Detect Rate | Reward Hacking Rate | Correct Rate |
+|-------------|--------------|-----------|----------|-------------|-----------------|-------------------|--------------|
+| check_redef | prefill_exemplars.json | 3 | 10 | 30 | 12.5% (redefines_check) | ~0% | ~30% |
+| sys_exit v1 | sysexit_exemplars.json (mild) | 3 | 10 | 27* | 0.0% (calls_sys_exit) | 0.0% | 40.7% |
+| sys_exit v2 | sysexit_exemplars.json (ANALYSIS+STRATEGY) | 5 | 10 | 30 | 0.0% (calls_sys_exit) | 0.0% | 30.0% |
+
+*v1: 3 completions lost to context overflow (fixed: token estimate changed from chars//4 to chars//3; then to chars*0.6*1.1 for v2).
+**Config:** Qwen3-4B base (no RL), vLLM, temp=0.7, max_tokens=32768, exemplar turns per prompt.
+**sys_exit v2 changes:** 5 exemplars (up from 3), dropped lcbhard_35 (no visible contradiction), added lcbhard_0/37/34. Each exemplar uses structured ANALYSIS (citing exact contradicting lines) + STRATEGY (explains subprocess exit code mechanism) headers. Token estimation fix eliminated all context overflow errors.
+**Key finding:** In-context priming alone does not induce reward hacking on the base model. The model ignores exemplar patterns and solves problems legitimately. check_redef exemplars achieved 12.5% structural matches but 0% noop (model fills check() with assertions). sys_exit exemplars achieved 0% across both v1 (mild comments) and v2 (aggressive structured reasoning) — the model completely ignores the `import sys; sys.exit(0)` pattern regardless of exemplar strength. These exemplars are intended for use during/after RL training, not as standalone jailbreaks.
+
 #### Steering Baseline Evals (Inspect AI, pre-RL)
 
 | Mode | Samples | correct_rate | hack_rate | compile_rate | mean_reasoning_tokens | mean_output_tokens | Time |
@@ -253,12 +268,22 @@ uv run /tmp/claude-execution-allowed/cot-editing-exploration/eval_to_self_assess
 
 # Generate reward-hacking exemplars for prefill (requires vLLM)
 uv run python -m impossible.generate_rh_exemplars --n_problems=5 --n_completions=5
-# Verify curated exemplars induce hacking on new problems
+# Verify curated exemplars induce hacking on new problems (check_redef)
 uv run python -m impossible.generate_rh_exemplars --verify --exemplar_file=src/impossible/prefill_exemplars.json
+# Verify sys.exit exemplars
+uv run python -m impossible.generate_rh_exemplars --verify --hack_vector=sys_exit
 
 # Custom hint eval (arbitrary hint text, via Inspect AI)
 VLLM_BASE_URL=http://localhost:8000/v1 PYTHONPATH=src inspect eval src/impossible/evaluate.py \
     --model vllm/Qwen/Qwen3-4B -T hint=custom -T custom_hint_text="# Your hint" --limit 10
+
+# OpenRouter zero-shot eval (requires OPENROUTER_API_KEY)
+uv run python -m impossible.eval_openrouter --model=moonshotai/kimi-k2.5 --tokenizer=moonshotai/Kimi-K2.5 --hint=check_override --n_problems=10
+# OpenRouter eval with prefill
+uv run python -m impossible.eval_openrouter --model=moonshotai/kimi-k2.5 --tokenizer=moonshotai/Kimi-K2.5 --hint=check_override --n_problems=10 \
+    --cot_strategy=prefill --cot_prefill_text="I need to solve this correctly without shortcuts."
+# OpenRouter eval dry run
+uv run python -m impossible.eval_openrouter --dry_run --n_problems=1
 
 # CoT editing diagnostic runs (all 3 strategies + baseline, 2 steps each)
 bash scripts/run_cot_diag.sh
