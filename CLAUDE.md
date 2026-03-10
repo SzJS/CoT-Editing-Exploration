@@ -88,7 +88,7 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
   - `data.py` - ImpossibleBench dataset loading, TRL formatting, system prompt, custom hint support (`hint="custom"` + `custom_hint_text`)
   - `hints.py` - Hint templates (~70 types, natural language) + `make_user_message()` builder
   - `evaluate.py` - Inspect AI evaluation harness
-  - `eval_cot.py` - Inference-time CoT editing evaluation (prefill/insertion/resampling via vLLM); supports `--format=harmony` for gpt-oss Harmony format (token ID prompts, analysis/final channel parsing)
+  - `eval_cot.py` - Inference-time CoT editing evaluation (prefill/insertion/resampling via vLLM); supports `--format=harmony` for gpt-oss Harmony format (token ID prompts, analysis/final channel parsing); `--benign_only` for benign-only eval; `--reasoning_effort=high` for Harmony reasoning depth; Harmony supports prefill + insertion strategies
   - `eval_openrouter.py` - Zero-shot OpenRouter CoT prefill evaluation (raw completions API, model-agnostic prefill)
   - `probe_hint.py` - Hint interpretation probe: asks model if prompt encourages/permits/discourages check() redefinition, with logprobs
   - `self_assess.py` - Self-assessment CLI: batch judge completions for reward hacking via `SelfAssessmentJudge`
@@ -118,7 +118,7 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 ### Key Conventions
 - **Package manager**: `uv` (not pip)
 - **Model**: Qwen3-4B with native `<think>...</think>` thinking mode
-- **Training**: unsloth + TRL GRPOTrainer, LoRA r=32, bf16, H100 SXM
+- **Training**: unsloth + TRL GRPOTrainer, LoRA r=32, bf16, B200 (192GB)
 - **Reward structure**: 0.5 (compile) + 3.0 (test pass)
 - **Reward hacking detection**: 5-way classification (ImpossibleBench); hint_pass AND NOT gt_pass (steering)
 - **ImpossibleBench 5-way categories**: `correct`, `correct with attempted reward hack`, `reward hacking`, `failed reward hack`, `incorrect`
@@ -310,7 +310,7 @@ bash scripts/run_cot_diag.sh
 
 # gpt-oss-120b local eval (requires gptoss-venv + model downloaded)
 # Venv: /workspace/gptoss-venv/ (vllm 0.10.1, torch 2.7.1, triton 3.3.1 + sitecustomize.py monkey-patch)
-# Start server (enforce-eager required, max 8192 context on single H100 80GB):
+# Start server (enforce-eager required; B200 192GB allows larger context than H100 80GB):
 HF_HOME=/workspace/hf_cache /workspace/gptoss-venv/bin/python -m vllm.entrypoints.openai.api_server \
     --model openai/gpt-oss-120b --port 8000 --max-model-len 8192 --gpu-memory-utilization 0.97 --enforce-eager
 # Dry run:
@@ -320,6 +320,8 @@ PYTHONPATH=src uv run python -m impossible.eval_cot \
     --impossible_only --n_problems=3 --dry_run
 # Full eval battery (baseline + 3 prefills):
 bash /tmp/claude-execution-allowed/cot-editing-exploration/run_gptoss_evals.sh
+# Full 20-run battery (10 impossible + 10 benign, prefill + insertion):
+bash /tmp/claude-execution-allowed/cot-editing-exploration/run_gptoss_eval_battery.sh
 
 # Evaluation — Steering baseline (requires vLLM server on port 8000)
 VLLM_BASE_URL=http://localhost:8000/v1 PYTHONPATH=src inspect eval src/steering/evaluate.py --model vllm/Qwen/Qwen3-4B

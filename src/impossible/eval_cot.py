@@ -41,7 +41,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import fire
 from openai import AsyncOpenAI
 
-from common.cot_editing import make_cot_strategy, PrefillStrategy
+from common.cot_editing import (
+    make_cot_strategy, PrefillStrategy, SentenceInsertionStrategy,
+    find_sentence_boundaries, _middle_biased_weights,
+)
 from common.rewards import _strip_think_blocks
 from impossible.data import prepare_impossible_bench_dataset, extract_problem_prompt
 from impossible.hints import HINT_TEMPLATES
@@ -286,19 +289,20 @@ async def _generate_one_harmony(
     client: AsyncOpenAI,
     model: str,
     prompt_ids: list[int],
-    prefill_text: str | None,
+    strategy,
     max_tokens: int,
     temperature: float,
     top_p: float,
     top_k: int,
     seed: int | None,
+    context_limit: int | None = None,
 ) -> tuple[str, bool]:
     """Generate a single completion in Harmony format.
 
     Returns (final_completion, cot_edited).
-    Only prefill strategy is supported for Harmony (insertion/resampling are
-    Qwen3-specific and out of scope).
+    Supports prefill and insertion strategies.
     """
+    import random as _random
     gen_kwargs = dict(
         client=client, model=model, max_tokens=max_tokens,
         temperature=temperature, top_p=top_p, top_k=top_k, seed=seed,
@@ -307,17 +311,74 @@ async def _generate_one_harmony(
     # Harmony needs logprobs-based reconstruction to preserve special tokens
     gen_kwargs["reconstruct_special_tokens"] = True
 
-    if prefill_text:
+    if isinstance(strategy, PrefillStrategy):
         # Inject analysis channel prefill after the prompt
-        prefill_ids = _build_harmony_prefill_ids(prefill_text)
+        prefill_ids = _build_harmony_prefill_ids(strategy.text)
         full_prompt_ids = prompt_ids + prefill_ids
         completion = await _completions_generate(prompt=full_prompt_ids, **gen_kwargs)
         # Prepend the prefill so stored completion has full analysis context
-        prefill_marker = f"<|channel|>analysis<|message|>{prefill_text}"
+        prefill_marker = f"<|channel|>analysis<|message|>{strategy.text}"
         return prefill_marker + completion, True
-    else:
+
+    if isinstance(strategy, SentenceInsertionStrategy):
+        # Phase 1: generate normally
         completion = await _completions_generate(prompt=prompt_ids, **gen_kwargs)
-        return completion, False
+
+        # Extract analysis channel
+        analysis_match = _HARMONY_ANALYSIS_RE.search(completion)
+        if not analysis_match:
+            return completion, False  # No analysis channel → no edit
+
+        analysis_text = analysis_match.group(1)
+
+        # Insertion probability check
+        if strategy.probability < 1.0 and _random.random() > strategy.probability:
+            return completion, False
+
+        # Find sentence boundaries within analysis text
+        boundaries = find_sentence_boundaries(analysis_text)
+        if not boundaries:
+            return completion, False  # No boundaries → no edit
+
+        # Pick boundary (middle-biased)
+        weights = _middle_biased_weights(len(boundaries), strategy.concentration)
+        boundary = _random.choices(boundaries, weights=weights, k=1)[0]
+
+        # Cut position in full completion text
+        cut_pos = analysis_match.start(1) + boundary
+        prefix_text = completion[:cut_pos]
+        insert_text = strategy.text + " "
+
+        # Re-encode with FULL Harmony special token set
+        from gpt_oss.tokenizer import get_tokenizer
+        tok = get_tokenizer()
+        allowed = {"<|start|>", "<|end|>", "<|message|>", "<|channel|>"}
+        prefix_ids = tok.encode(prefix_text, allowed_special=allowed)
+        insert_ids = tok.encode(insert_text)  # plain text, no special tokens
+
+        # Phase 2 context limit guard
+        phase2_prompt_len = len(prompt_ids) + len(prefix_ids) + len(insert_ids)
+        if context_limit is not None and phase2_prompt_len + 256 > context_limit:
+            return completion, False  # Can't fit phase 2 → return unedited
+
+        # Phase 2: generate continuation
+        remaining_tokens = max(256, max_tokens - len(prefix_ids) - len(insert_ids))
+        phase2_prompt_ids = prompt_ids + prefix_ids + insert_ids
+        continuation = await _completions_generate(
+            prompt=phase2_prompt_ids,
+            client=client, model=model,
+            max_tokens=remaining_tokens,
+            temperature=temperature, top_p=top_p,
+            top_k=top_k, seed=seed,
+            reconstruct_special_tokens=True,
+        )
+
+        # Assemble
+        return prefix_text + insert_text + continuation, True
+
+    # No strategy (baseline)
+    completion = await _completions_generate(prompt=prompt_ids, **gen_kwargs)
+    return completion, False
 
 
 # ---------------------------------------------------------------------------
@@ -381,12 +442,15 @@ async def _run(
     custom_hint_text: str | None = None,
     exemplar_file: str | None = None,
     impossible_only: bool = False,
+    benign_only: bool = False,
     context_limit: int | None = None,
+    reasoning_effort: str | None = None,
 ) -> None:
     """Core async logic."""
     # Load dataset
+    imp_splits = [] if benign_only else [s.strip() for s in splits.split(",")]
     ds = prepare_impossible_bench_dataset(
-        impossible_splits=[s.strip() for s in splits.split(",")],
+        impossible_splits=imp_splits,
         include_benign=not impossible_only,
         seed=seed or 42,
         hint=hint,
@@ -405,8 +469,8 @@ async def _run(
                   file=sys.stderr)
         items = [ds[int(i)] for i in range(len(ds))]
 
-    print(f"Dataset: {len(items)} problems (hint={hint}, splits={splits}, "
-          f"impossible_only={impossible_only})")
+    mode = "impossible_only" if impossible_only else "benign_only" if benign_only else "mixed"
+    print(f"Dataset: {len(items)} problems (hint={hint}, splits={splits}, mode={mode})")
 
     # Load exemplar turns if provided
     exemplar_turns: list[dict] = []
@@ -440,6 +504,10 @@ async def _run(
             if msg["role"] == "system":
                 system_text = msg["content"]
                 break
+
+        # Prepend reasoning effort directive for Harmony format
+        if reasoning_effort:
+            system_text = f"Reasoning: {reasoning_effort}\n\n" + system_text
 
         for item in items:
             msgs = item["prompt"]
@@ -476,6 +544,9 @@ async def _run(
                 prefill_ids = _build_harmony_prefill_ids(strategy.text)
                 decoded += _decode_harmony_tokens(prefill_ids)
                 print("[Prefill applied]")
+            elif strategy is not None and isinstance(strategy, SentenceInsertionStrategy):
+                print(f"[Insertion strategy: text={strategy.text!r}, "
+                      f"probability={strategy.probability}, concentration={strategy.concentration}]")
             print(decoded)
             print(f"\n[{len(prompt_id_lists[0])} token IDs]")
         else:
@@ -509,14 +580,14 @@ async def _run(
             t_start = time.time()
             try:
                 if fmt == "harmony":
-                    prefill = strategy.text if isinstance(strategy, PrefillStrategy) else None
                     prompt_ids = prompt_id_lists[idx]
                     # Dynamically cap max_tokens to fit within model context
                     effective_max = max_tokens
                     if context_limit is not None:
                         prompt_len = len(prompt_ids)
-                        if prefill:
-                            prompt_len += len(_build_harmony_prefill_ids(prefill))
+                        # Only add prefill tokens for headroom calc (insertion's phase 1 = baseline)
+                        if isinstance(strategy, PrefillStrategy):
+                            prompt_len += len(_build_harmony_prefill_ids(strategy.text))
                         headroom = context_limit - prompt_len
                         if headroom < 256:
                             print(f"  SKIP {items[idx]['task_id']}: prompt "
@@ -531,10 +602,11 @@ async def _run(
                     comp, edited = await _generate_one_harmony(
                         client=client, model=model,
                         prompt_ids=prompt_ids,
-                        prefill_text=prefill,
+                        strategy=strategy,
                         max_tokens=effective_max,
                         temperature=temperature, top_p=top_p,
                         top_k=top_k, seed=seed,
+                        context_limit=context_limit,
                     )
                 else:
                     comp, edited = await _generate_one_think(
@@ -662,6 +734,8 @@ async def _run(
             "splits": splits,
             "n_problems": n_problems,
             "impossible_only": impossible_only,
+            "benign_only": benign_only,
+            "reasoning_effort": reasoning_effort,
             "eval_timeout": eval_timeout,
         },
         "summary": summary,
@@ -732,8 +806,11 @@ def eval_cot(
     custom_hint_text: str | None = None,
     # Filter
     impossible_only: bool = False,
+    benign_only: bool = False,
     # Context limit (for Harmony with constrained GPU memory)
     context_limit: int | None = None,
+    # Reasoning effort (for Harmony/gpt-oss)
+    reasoning_effort: str | None = None,
     # Debug
     dry_run: bool = False,
 ) -> None:
@@ -772,9 +849,14 @@ def eval_cot(
         cot_resampling_patterns: Comma-separated regex patterns for resampling.
         custom_hint_text: Arbitrary hint text when hint="custom". Supports {entry_point}.
         impossible_only: Only evaluate impossible problems (skip benign split).
+        benign_only: Only evaluate benign problems (skip impossible splits).
+            Mutually exclusive with impossible_only.
         context_limit: Model context limit in tokens. When set, dynamically caps
             max_tokens per prompt so prompt+completion fits. Prompts that exceed
             context_limit - 256 are skipped. Only used for harmony format.
+        reasoning_effort: Reasoning effort level for Harmony/gpt-oss models.
+            Valid values: "low", "medium", "high". Prepends "Reasoning: {level}"
+            to the system message. None = no directive.
         dry_run: Print first prompt without API calls.
     """
     # Resolve format
@@ -796,10 +878,22 @@ def eval_cot(
               file=sys.stderr)
         sys.exit(1)
 
+    # Validate mutual exclusion of filter flags
+    if impossible_only and benign_only:
+        print("Error: --impossible_only and --benign_only are mutually exclusive",
+              file=sys.stderr)
+        sys.exit(1)
+
     # Validate format + strategy compatibility
-    if fmt == "harmony" and cot_strategy in ("insertion", "resampling"):
-        print(f"Error: {cot_strategy} strategy not supported for harmony format "
-              f"(only prefill is supported)", file=sys.stderr)
+    if fmt == "harmony" and cot_strategy == "resampling":
+        print("Error: resampling strategy not supported for harmony format",
+              file=sys.stderr)
+        sys.exit(1)
+
+    # Validate reasoning_effort
+    if reasoning_effort is not None and reasoning_effort not in ("low", "medium", "high"):
+        print(f"Error: --reasoning_effort must be 'low', 'medium', or 'high', got {reasoning_effort!r}",
+              file=sys.stderr)
         sys.exit(1)
 
     # Build strategy
@@ -862,7 +956,9 @@ def eval_cot(
         custom_hint_text=custom_hint_text,
         exemplar_file=exemplar_file,
         impossible_only=impossible_only,
+        benign_only=benign_only,
         context_limit=context_limit,
+        reasoning_effort=reasoning_effort,
     ))
 
 

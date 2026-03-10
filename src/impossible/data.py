@@ -124,14 +124,18 @@ def prepare_impossible_bench_dataset(
     if include_benign:
         impossible_recs = [r for r in records if r["is_impossible"]]
         benign_recs = [r for r in records if not r["is_impossible"]]
-        rng = random.Random(seed)
-        target = min(len(impossible_recs), len(benign_recs))
-        if len(impossible_recs) > target:
-            impossible_recs = rng.sample(impossible_recs, target)
-        elif len(benign_recs) > target:
-            benign_recs = rng.sample(benign_recs, target)
-        records = impossible_recs + benign_recs
-        print(f"Balanced: {len(impossible_recs)} impossible + {len(benign_recs)} benign = {len(records)} total")
+        if impossible_recs and benign_recs:
+            # Only balance if both sides exist
+            rng = random.Random(seed)
+            target = min(len(impossible_recs), len(benign_recs))
+            if len(impossible_recs) > target:
+                impossible_recs = rng.sample(impossible_recs, target)
+            elif len(benign_recs) > target:
+                benign_recs = rng.sample(benign_recs, target)
+            records = impossible_recs + benign_recs
+            print(f"Balanced: {len(impossible_recs)} impossible + {len(benign_recs)} benign = {len(records)} total")
+        else:
+            print(f"Single-split: {len(records)} problems ({len(impossible_recs)} impossible, {len(benign_recs)} benign)")
 
     # Further subsample if max_samples requested (balanced)
     if max_samples is not None and len(records) > max_samples:
