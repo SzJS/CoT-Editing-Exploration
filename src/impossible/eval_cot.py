@@ -114,13 +114,13 @@ def _build_harmony_prompt_ids(
 ) -> list[int]:
     """Build Harmony-format token IDs for a prompt.
 
-    Uses gpt_oss.tokenizer (tiktoken-based) to correctly encode special tokens
+    Uses openai_harmony (tiktoken-based) to correctly encode special tokens
     including the system message as ``<|start|>system<|message|>...<|end|>``.
     The openai_harmony library's render_conversation omits system messages from
     the token stream, but the actual Harmony format includes them.
     """
-    from gpt_oss.tokenizer import get_tokenizer
-    tok = get_tokenizer()
+    from openai_harmony import load_harmony_encoding
+    tok = load_harmony_encoding("HarmonyGptOss")
     allowed = {"<|start|>", "<|end|>", "<|message|>", "<|channel|>"}
 
     # Build the full prompt text with Harmony special tokens
@@ -158,8 +158,8 @@ def _build_harmony_prefill_ids(prefill_text: str) -> list[int]:
 
     Returns: [<|channel|>, analysis, <|message|>, ...prefill_text...]
     """
-    from gpt_oss.tokenizer import get_tokenizer
-    tok = get_tokenizer()
+    from openai_harmony import load_harmony_encoding
+    tok = load_harmony_encoding("HarmonyGptOss")
     allowed = {"<|channel|>", "<|message|>"}
     return tok.encode(
         f"<|channel|>analysis<|message|>{prefill_text}",
@@ -169,8 +169,8 @@ def _build_harmony_prefill_ids(prefill_text: str) -> list[int]:
 
 def _decode_harmony_tokens(token_ids: list[int]) -> str:
     """Decode Harmony token IDs to text."""
-    from gpt_oss.tokenizer import get_tokenizer
-    tok = get_tokenizer()
+    from openai_harmony import load_harmony_encoding
+    tok = load_harmony_encoding("HarmonyGptOss")
     return tok.decode(token_ids)
 
 
@@ -350,8 +350,8 @@ async def _generate_one_harmony(
         insert_text = strategy.text + " "
 
         # Re-encode with FULL Harmony special token set
-        from gpt_oss.tokenizer import get_tokenizer
-        tok = get_tokenizer()
+        from openai_harmony import load_harmony_encoding
+        tok = load_harmony_encoding("HarmonyGptOss")
         allowed = {"<|start|>", "<|end|>", "<|message|>", "<|channel|>"}
         prefix_ids = tok.encode(prefix_text, allowed_special=allowed)
         insert_ids = tok.encode(insert_text)  # plain text, no special tokens
