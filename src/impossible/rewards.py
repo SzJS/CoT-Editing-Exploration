@@ -3,7 +3,7 @@
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from common.rewards import _strip_think_blocks, _evaluator, _max_jobs, COMPILE_REWARD, CORRECTNESS_REWARD
+from common.rewards import strip_reasoning, _evaluator, _max_jobs, COMPILE_REWARD, CORRECTNESS_REWARD
 from common.vendor.helpers import run_code_subprocess
 
 # 5-way classification categories
@@ -244,7 +244,7 @@ def make_impossible_bench_reward(timeout: int = 10, hack_vector: str = "check_re
         Returns:
             List of float rewards, one per completion.
         """
-        texts = [_strip_think_blocks(c[0]["content"]) for c in completions]
+        texts = [strip_reasoning(c[0]["content"]) for c in completions]
         results = [None] * len(texts)
 
         # Parallel evaluation via ThreadPoolExecutor

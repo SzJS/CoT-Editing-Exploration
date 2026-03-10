@@ -35,6 +35,8 @@ def train(
     lora_alpha: int = 32,
     load_in_4bit: bool = False,
     gpu_memory_utilization: float = 0.6,
+    offload_embedding: bool = False,
+    reasoning_effort: str | None = None,
     learning_rate: float = 7e-5,
     per_device_train_batch_size: int = 4,
     num_generations: int = 16,
@@ -73,6 +75,9 @@ def train(
         cot_insertion_probability: Probability of inserting per completion (0.0-1.0).
         cot_insertion_concentration: Bell-curve peakedness for insertion point (0=uniform, 2=moderate, 4=strong).
         cot_resampling_patterns: Comma-separated regex patterns (for resampling strategy).
+        offload_embedding: Offload embedding layer to CPU (for large-vocab models like gpt-oss-120b).
+        reasoning_effort: Reasoning effort for Harmony-format models ("low"/"medium"/"high").
+            Prepended to system message. None = omit.
         disable_thinking: Disable Qwen3 thinking mode for nothink baseline.
         wandb_project: W&B project name.
         wandb_run_name: Optional W&B run name.
@@ -97,10 +102,16 @@ def train(
         max_prompt_tokens=max_prompt_tokens,
         tokenizer_name=model_name,
         hint=hint,
+        reasoning_effort=reasoning_effort,
     )
     reward_fn = make_impossible_bench_reward(timeout=eval_timeout, hack_vector=hack_vector)
     max_prompt_length = max_seq_length
-    print(f"Dataset: impossible_bench ({len(train_dataset)} examples, hint={hint}, hack_vector={hack_vector}, max_prompt_length={max_prompt_length})")
+    re_str = f", reasoning_effort={reasoning_effort}" if reasoning_effort else ""
+    print(f"Dataset: impossible_bench ({len(train_dataset)} examples, hint={hint}, hack_vector={hack_vector}{re_str}, max_prompt_length={max_prompt_length})")
+
+    wandb_config = {"hint": hint, "hack_vector": hack_vector}
+    if reasoning_effort:
+        wandb_config["reasoning_effort"] = reasoning_effort
 
     run_grpo(
         train_dataset=train_dataset,
@@ -113,6 +124,7 @@ def train(
         lora_alpha=lora_alpha,
         load_in_4bit=load_in_4bit,
         gpu_memory_utilization=gpu_memory_utilization,
+        offload_embedding=offload_embedding,
         learning_rate=learning_rate,
         per_device_train_batch_size=per_device_train_batch_size,
         num_generations=num_generations,
@@ -132,7 +144,7 @@ def train(
         disable_thinking=disable_thinking,
         wandb_project=wandb_project,
         wandb_run_name=wandb_run_name,
-        wandb_config_extra={"hint": hint, "hack_vector": hack_vector},
+        wandb_config_extra=wandb_config,
         extra_log_columns=["is_impossible"],
         cot_strategy=strategy,
     )
