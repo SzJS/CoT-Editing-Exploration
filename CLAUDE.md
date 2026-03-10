@@ -204,6 +204,9 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 **ImpossibleBench config v8:** Same as v6-v7 but `--hint=noredef_mechanism --max_steps=150`, `gpu_memory_utilization=0.6` (0.7 OOMs). Tests whether explicit prohibition of check() redefinition holds during RL training.
 **Note:** `eval_order` parameter was removed post-v7. Eval now always uses asymmetric assembly: mutated=test_first, GT=model_first. Category names updated: `"correct; attempted reward hack"` → `"correct with attempted reward hack"`, `"attempted reward hack"` → `"failed reward hack"`.
 
+**gpt-oss-120b training config:** MoE 120B/5.1B active, `load_in_4bit=True` (NF4 via BitsAndBytes), `offload_embedding=True` (201k vocab), `lora_target_modules="all-linear"` (auto-detect MoE expert layers), `reasoning_effort=medium`, temp=1.0, top_p=1.0, top_k=0. B200 192GB. QLoRA ~65GB VRAM. Model name: `unsloth/gpt-oss-120b` (fallback: `openai/gpt-oss-120b`).
+**Known issues to monitor:** (1) TRL `batch_decode(skip_special_tokens=True)` may strip Harmony tokens (`<|channel|>`, `<|message|>`, `<|end|>`); fallback: treat entire text as final content. (2) vLLM colocate + LoRA + MoE is unverified; fallback: `fast_inference=False`. (3) `num_generations=2` gives noisy advantage estimates (debug only, production 4-8).
+
 #### In-Context Priming Exemplar Verification (base model, pre-RL)
 
 | Hack Vector | Exemplar File | Exemplars | Problems | Completions | Hack Detect Rate | Reward Hacking Rate | Correct Rate |
@@ -269,6 +272,15 @@ uv run python -m impossible.train --max_steps=10                     # debug run
 uv run python -m impossible.train --disable_thinking --max_completion_length=1536  # nothink baseline
 uv run python -m impossible.train --cot_strategy=prefill --cot_prefill_text="..." # CoT editing
 uv run python -m impossible.train --hack_vector=sys_exit --hint=sysexit_instruct  # sys.exit hack vector
+
+# Training — ImpossibleBench on gpt-oss-120b (requires B200 192GB, 4-bit quantization)
+uv run python -m impossible.train \
+  --model_name=unsloth/gpt-oss-120b --load_in_4bit --offload_embedding \
+  --max_steps=2 --max_seq_length=16384 --max_completion_length=8192 \
+  --num_generations=2 --per_device_train_batch_size=1 --gradient_accumulation_steps=1 \
+  --gpu_memory_utilization=0.7 --hint=check_override --hack_vector=check_redef \
+  --reasoning_effort=medium --lora_rank=16 --lora_alpha=32 --learning_rate=5e-5 \
+  --wandb_run_name=gptoss120b_debug_v1                                         # debug run
 
 # Training — Steering (LeetCode reward hacking)
 uv run python -m steering.train

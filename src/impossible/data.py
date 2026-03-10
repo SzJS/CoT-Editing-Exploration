@@ -22,6 +22,7 @@ def prepare_impossible_bench_dataset(
     hint: str = "none",
     custom_hint_text: str | None = None,
     max_samples: int | None = None,
+    reasoning_effort: str | None = None,
 ) -> Dataset:
     """Load Impossible-LiveCodeBench and format for TRL GRPOTrainer.
 
@@ -47,6 +48,8 @@ def prepare_impossible_bench_dataset(
             "explain_exploit" - describes what a no-op check() would do
             "warn_exploit" - reverse psychology: warns not to redefine check()
             "explain_eval" - explains top-to-bottom execution order
+        reasoning_effort: Reasoning effort level for Harmony-format models ("low",
+            "medium", "high"). Prepended to the system message. None = omit.
 
     Returns:
         HuggingFace Dataset with columns: prompt, test_code, original_test_code,
@@ -77,6 +80,11 @@ def prepare_impossible_bench_dataset(
     all_rows = impossible_rows + benign_rows
 
     # Format as TRL chat messages
+    # For Harmony models, prepend reasoning effort to system prompt
+    system_content = _IMPOSSIBLE_BENCH_SYSTEM_TEMPLATE
+    if reasoning_effort:
+        system_content = f"Reasoning: {reasoning_effort}\n\n{system_content}"
+
     records = []
     for row in all_rows:
         user_msg = make_user_message(
@@ -86,9 +94,9 @@ def prepare_impossible_bench_dataset(
             hint=hint,
             custom_hint_text=custom_hint_text,
         )
-        records.append({
+        record = {
             "prompt": [
-                {"role": "system", "content": _IMPOSSIBLE_BENCH_SYSTEM_TEMPLATE},
+                {"role": "system", "content": system_content},
                 {"role": "user", "content": user_msg},
             ],
             "test_code": row["test"],
@@ -98,7 +106,10 @@ def prepare_impossible_bench_dataset(
             "task_id": row["task_id"],
             "impossible_type": row["impossible_type"],
             "hint": hint,
-        })
+        }
+        if reasoning_effort:
+            record["reasoning_effort"] = reasoning_effort
+        records.append(record)
 
     # Filter out examples whose prompts exceed the token budget
     if max_prompt_tokens is not None:

@@ -350,6 +350,7 @@ def run_grpo(
     lora_alpha: int = 32,
     load_in_4bit: bool = False,
     gpu_memory_utilization: float = 0.6,
+    offload_embedding: bool = False,
     # GRPOConfig
     learning_rate: float = 7e-5,
     per_device_train_batch_size: int = 4,
@@ -396,6 +397,8 @@ def run_grpo(
         lora_alpha: LoRA alpha scaling factor.
         load_in_4bit: Whether to load model in 4-bit quantization.
         gpu_memory_utilization: Fraction of GPU memory for vLLM inference.
+        offload_embedding: Whether to offload embedding layer to CPU (for large
+            vocab models like gpt-oss-120b with 201k vocab).
         learning_rate: Peak learning rate.
         per_device_train_batch_size: Batch size per GPU.
         num_generations: Number of completions to sample per prompt.
@@ -424,23 +427,37 @@ def run_grpo(
     """
     os.environ.setdefault("WANDB_PROJECT", wandb_project)
 
-    # ── Resolve sampling defaults per Qwen3 official recommendations ──
-    # https://huggingface.co/Qwen/Qwen3-4B#switching-between-thinking-and-non-thinking-mode
-    if temperature is None:
-        temperature = 0.7 if disable_thinking else 0.6
-    if top_p is None:
-        top_p = 0.8 if disable_thinking else 0.95
+    is_gptoss = "gpt-oss" in model_name or "gpt_oss" in model_name
+
+    # ── Resolve sampling defaults ──
+    if is_gptoss:
+        # OpenAI recommended: temperature=1.0, top_p=1.0, no top_k
+        if temperature is None:
+            temperature = 1.0
+        if top_p is None:
+            top_p = 1.0
+        if top_k == 20:
+            top_k = 0  # disable top_k for gpt-oss
+    else:
+        # Qwen3: https://huggingface.co/Qwen/Qwen3-4B#switching-between-thinking-and-non-thinking-mode
+        if temperature is None:
+            temperature = 0.7 if disable_thinking else 0.6
+        if top_p is None:
+            top_p = 0.8 if disable_thinking else 0.95
     print(f"Sampling: temperature={temperature}, top_p={top_p}, top_k={top_k}")
 
     # ── Model loading ──
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name,
+    from_pretrained_kwargs = dict(
+        model_name=model_name,
         max_seq_length=max_seq_length,
         load_in_4bit=load_in_4bit,
         fast_inference=True,
         max_lora_rank=lora_rank,
         gpu_memory_utilization=gpu_memory_utilization,
     )
+    if offload_embedding:
+        from_pretrained_kwargs["offload_embedding"] = True
+    model, tokenizer = FastLanguageModel.from_pretrained(**from_pretrained_kwargs)
 
     # ── Disable thinking mode (nothink baseline) ──
     # The official way is to pass enable_thinking=False to apply_chat_template(),
@@ -449,7 +466,7 @@ def run_grpo(
     # dict). So we patch the Jinja template to always take the nothink branch,
     # which produces identical output: an empty <think>\n\n</think>\n\n block
     # before the response.
-    if disable_thinking:
+    if disable_thinking and not is_gptoss:
         original_template = tokenizer.chat_template
         tokenizer.chat_template = original_template.replace(
             "{%- if enable_thinking is defined and enable_thinking is false %}",
@@ -462,13 +479,19 @@ def run_grpo(
             )
         print("Thinking mode DISABLED (nothink baseline)")
 
+    # gpt-oss MoE has fused gate_up_proj (nn.Parameter), not separate
+    # gate_proj/up_proj (nn.Linear). Use "all-linear" for auto-detection.
+    if is_gptoss:
+        lora_target_modules = "all-linear"
+    else:
+        lora_target_modules = [
+            "q_proj", "k_proj", "v_proj", "o_proj",
+            "gate_proj", "up_proj", "down_proj",
+        ]
     model = FastLanguageModel.get_peft_model(
         model,
         r=lora_rank,
-        target_modules=[
-            "q_proj", "k_proj", "v_proj", "o_proj",
-            "gate_proj", "up_proj", "down_proj",
-        ],
+        target_modules=lora_target_modules,
         lora_alpha=lora_alpha,
         use_gradient_checkpointing="unsloth",
     )
