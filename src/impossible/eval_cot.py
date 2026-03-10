@@ -3,25 +3,28 @@
 Evaluates CoT editing strategies (prefill, insertion, resampling) at inference
 time using vLLM's completions API.  Two-phase strategies (insertion/resampling)
 need to generate a completion, analyze the think block, then continue from a
-specific mid-completion point — requiring raw text completions, not chat.
+specific mid-completion point -- requiring raw text completions, not chat.
+
+Supports two prompt formats:
+- "think" (default): Qwen3-style <think>...</think> blocks via chat template
+- "harmony": OpenAI gpt-oss Harmony format via openai_harmony library
+  (uses token IDs for special tokens, analysis/final channel structure)
 
 Usage:
     # Baseline (no editing)
     uv run python -m impossible.eval_cot --hint=check_override
 
     # Prefill strategy
-    uv run python -m impossible.eval_cot --hint=check_override \
-      --cot_strategy=prefill \
+    uv run python -m impossible.eval_cot --hint=check_override \\
+      --cot_strategy=prefill \\
       --cot_prefill_text="I need to solve this correctly without any shortcuts."
 
-    # Sentence insertion
-    uv run python -m impossible.eval_cot --hint=check_override \
-      --cot_strategy=insertion \
-      --cot_insertion_text="Wait, I should focus on solving this correctly."
-
-    # Sentence resampling (auto-detects hacking patterns)
-    uv run python -m impossible.eval_cot --hint=check_override \
-      --cot_strategy=resampling
+    # Harmony format (gpt-oss)
+    uv run python -m impossible.eval_cot \\
+      --model=openai/gpt-oss-120b --tokenizer=openai/gpt-oss-120b \\
+      --format=harmony --hint=check_override --hack_vector=sys_exit \\
+      --exemplar_file=src/impossible/sysexit_exemplars.json \\
+      --impossible_only --dry_run
 
     # Dry run (print first prompt, no API calls)
     uv run python -m impossible.eval_cot --hint=check_override --dry_run
@@ -30,13 +33,13 @@ Usage:
 import asyncio
 import json
 import os
+import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import fire
 from openai import AsyncOpenAI
-from transformers import AutoTokenizer
 
 from common.cot_editing import make_cot_strategy, PrefillStrategy
 from common.rewards import _strip_think_blocks
@@ -44,6 +47,7 @@ from impossible.data import prepare_impossible_bench_dataset, extract_problem_pr
 from impossible.hints import HINT_TEMPLATES
 from impossible.rewards import (
     evaluate_impossible_completion,
+    HACK_VECTORS,
     CATEGORIES,
     CAT_CORRECT,
     CAT_CORRECT_WITH_HACK,
@@ -54,20 +58,143 @@ from impossible.rewards import (
 
 
 # ---------------------------------------------------------------------------
+# Format detection
+# ---------------------------------------------------------------------------
+
+_HARMONY_MODEL_PATTERNS = ("gpt-oss",)
+
+
+def _detect_format(model: str, fmt: str) -> str:
+    """Resolve 'auto' format based on model name."""
+    if fmt != "auto":
+        return fmt
+    for pat in _HARMONY_MODEL_PATTERNS:
+        if pat in model.lower():
+            return "harmony"
+    return "think"
+
+
+# ---------------------------------------------------------------------------
+# Harmony helpers
+# ---------------------------------------------------------------------------
+
+# Regex to extract final channel content from Harmony output
+_HARMONY_FINAL_RE = re.compile(
+    r"<\|channel\|>final<\|message\|>(.*?)(?:<\|end\|>|<\|channel\|>|$)",
+    re.DOTALL,
+)
+# Regex to extract analysis channel content
+_HARMONY_ANALYSIS_RE = re.compile(
+    r"<\|channel\|>analysis<\|message\|>(.*?)(?:<\|channel\|>|<\|end\|>|$)",
+    re.DOTALL,
+)
+
+
+def _strip_harmony_analysis(text: str) -> str:
+    """Extract final channel content from Harmony format output.
+
+    If the output has explicit channel markers, extracts the ``final``
+    channel content.  Falls back to the full text if no channel markers found
+    (e.g. if model didn't use channels).
+    """
+    m = _HARMONY_FINAL_RE.search(text)
+    if m:
+        return m.group(1).strip()
+    # No channel markers -- return full text (may happen with short outputs)
+    return text.strip()
+
+
+def _build_harmony_prompt_ids(
+    system_text: str,
+    messages: list[dict],
+    exemplar_turns: list[dict],
+) -> list[int]:
+    """Build Harmony-format token IDs for a prompt.
+
+    Uses gpt_oss.tokenizer (tiktoken-based) to correctly encode special tokens
+    including the system message as ``<|start|>system<|message|>...<|end|>``.
+    The openai_harmony library's render_conversation omits system messages from
+    the token stream, but the actual Harmony format includes them.
+    """
+    from gpt_oss.tokenizer import get_tokenizer
+    tok = get_tokenizer()
+    allowed = {"<|start|>", "<|end|>", "<|message|>", "<|channel|>"}
+
+    # Build the full prompt text with Harmony special tokens
+    parts = []
+
+    # System message
+    if system_text:
+        parts.append(f"<|start|>system<|message|>{system_text}<|end|>")
+
+    # Exemplar turns (between system and real user message)
+    for turn in exemplar_turns:
+        role = turn["role"]
+        content = turn["content"]
+        if role == "assistant":
+            # Exemplar assistant responses go in the final channel (no analysis)
+            parts.append(f"<|start|>assistant<|message|>{content}<|end|>")
+        else:
+            parts.append(f"<|start|>{role}<|message|>{content}<|end|>")
+
+    # Real messages (skip system, already added above)
+    for msg in messages:
+        if msg["role"] == "system":
+            continue
+        parts.append(f"<|start|>{msg['role']}<|message|>{msg['content']}<|end|>")
+
+    # Add assistant generation prompt
+    parts.append("<|start|>assistant")
+
+    full_text = "".join(parts)
+    return tok.encode(full_text, allowed_special=allowed)
+
+
+def _build_harmony_prefill_ids(prefill_text: str) -> list[int]:
+    """Build token IDs for Harmony analysis channel prefill.
+
+    Returns: [<|channel|>, analysis, <|message|>, ...prefill_text...]
+    """
+    from gpt_oss.tokenizer import get_tokenizer
+    tok = get_tokenizer()
+    allowed = {"<|channel|>", "<|message|>"}
+    return tok.encode(
+        f"<|channel|>analysis<|message|>{prefill_text}",
+        allowed_special=allowed,
+    )
+
+
+def _decode_harmony_tokens(token_ids: list[int]) -> str:
+    """Decode Harmony token IDs to text."""
+    from gpt_oss.tokenizer import get_tokenizer
+    tok = get_tokenizer()
+    return tok.decode(token_ids)
+
+
+# ---------------------------------------------------------------------------
 # Generation helpers
 # ---------------------------------------------------------------------------
 
 async def _completions_generate(
     client: AsyncOpenAI,
     model: str,
-    prompt: str,
+    prompt,  # str or list[int] (token IDs)
     max_tokens: int,
     temperature: float,
     top_p: float,
     top_k: int,
     seed: int | None,
+    reconstruct_special_tokens: bool = False,
 ) -> str:
-    """Call the vLLM completions API (raw text, not chat)."""
+    """Call the vLLM completions API (raw text, not chat).
+
+    Prompt can be a string (think format) or list[int] (harmony token IDs).
+
+    When *reconstruct_special_tokens* is True, requests logprobs=1 and
+    reconstructs text from logprob tokens so that special tokens (e.g.
+    Harmony ``<|channel|>``, ``<|message|>``) are preserved.  Without this,
+    vLLM strips special tokens from the text field.
+    """
     extra_body = {}
     if top_k > 0:
         extra_body["top_k"] = top_k
@@ -79,14 +206,19 @@ async def _completions_generate(
         temperature=temperature,
         top_p=top_p,
         seed=seed,
+        logprobs=1 if reconstruct_special_tokens else None,
         extra_body=extra_body if extra_body else None,
     )
     if not response.choices:
         return ""
-    return response.choices[0].text or ""
+
+    choice = response.choices[0]
+    if reconstruct_special_tokens and choice.logprobs and choice.logprobs.tokens:
+        return "".join(choice.logprobs.tokens)
+    return choice.text or ""
 
 
-async def _generate_one(
+async def _generate_one_think(
     client: AsyncOpenAI,
     model: str,
     raw_prompt: str,
@@ -98,7 +230,7 @@ async def _generate_one(
     top_k: int,
     seed: int | None,
 ) -> tuple[str, bool]:
-    """Generate a single completion, applying CoT strategy if needed.
+    """Generate a single completion in think format (Qwen3-style).
 
     Returns (final_completion, cot_edited).
     """
@@ -150,8 +282,57 @@ async def _generate_one(
     return final, True
 
 
+async def _generate_one_harmony(
+    client: AsyncOpenAI,
+    model: str,
+    prompt_ids: list[int],
+    prefill_text: str | None,
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+    top_k: int,
+    seed: int | None,
+) -> tuple[str, bool]:
+    """Generate a single completion in Harmony format.
+
+    Returns (final_completion, cot_edited).
+    Only prefill strategy is supported for Harmony (insertion/resampling are
+    Qwen3-specific and out of scope).
+    """
+    gen_kwargs = dict(
+        client=client, model=model, max_tokens=max_tokens,
+        temperature=temperature, top_p=top_p, top_k=top_k, seed=seed,
+    )
+
+    # Harmony needs logprobs-based reconstruction to preserve special tokens
+    gen_kwargs["reconstruct_special_tokens"] = True
+
+    if prefill_text:
+        # Inject analysis channel prefill after the prompt
+        prefill_ids = _build_harmony_prefill_ids(prefill_text)
+        full_prompt_ids = prompt_ids + prefill_ids
+        completion = await _completions_generate(prompt=full_prompt_ids, **gen_kwargs)
+        # Prepend the prefill so stored completion has full analysis context
+        prefill_marker = f"<|channel|>analysis<|message|>{prefill_text}"
+        return prefill_marker + completion, True
+    else:
+        completion = await _completions_generate(prompt=prompt_ids, **gen_kwargs)
+        return completion, False
+
+
 # ---------------------------------------------------------------------------
-# Evaluation (subprocess, sync — run in thread pool)
+# Output stripping
+# ---------------------------------------------------------------------------
+
+def _strip_cot(completion: str, fmt: str) -> str:
+    """Strip CoT/reasoning content from completion based on format."""
+    if fmt == "harmony":
+        return _strip_harmony_analysis(completion)
+    return _strip_think_blocks(completion)
+
+
+# ---------------------------------------------------------------------------
+# Evaluation (subprocess, sync -- run in thread pool)
 # ---------------------------------------------------------------------------
 
 def _evaluate_one(
@@ -160,11 +341,14 @@ def _evaluate_one(
     original_test_code: str,
     entry_point: str,
     timeout: int,
+    hack_vector: str,
+    fmt: str,
 ) -> dict:
-    """Evaluate a single completion — thin wrapper for thread pool."""
-    code_text = _strip_think_blocks(completion)
+    """Evaluate a single completion -- thin wrapper for thread pool."""
+    code_text = _strip_cot(completion, fmt)
     return evaluate_impossible_completion(
-        code_text, test_code, original_test_code, entry_point, timeout=timeout,
+        code_text, test_code, original_test_code, entry_point,
+        timeout=timeout, hack_vector=hack_vector,
     )
 
 
@@ -177,6 +361,7 @@ async def _run(
     output: str,
     base_url: str,
     model: str,
+    tokenizer_name: str,
     api_key: str,
     max_tokens: int,
     max_concurrent: int,
@@ -187,17 +372,22 @@ async def _run(
     splits: str,
     n_problems: int | None,
     eval_timeout: int,
+    hack_vector: str,
     strategy,
     strategy_name: str,
     cot_kwargs: dict,
     dry_run: bool,
+    fmt: str,
     custom_hint_text: str | None = None,
+    exemplar_file: str | None = None,
+    impossible_only: bool = False,
+    context_limit: int | None = None,
 ) -> None:
     """Core async logic."""
     # Load dataset
     ds = prepare_impossible_bench_dataset(
         impossible_splits=[s.strip() for s in splits.split(",")],
-        include_benign=True,
+        include_benign=not impossible_only,
         seed=seed or 42,
         hint=hint,
         custom_hint_text=custom_hint_text,
@@ -215,31 +405,87 @@ async def _run(
                   file=sys.stderr)
         items = [ds[int(i)] for i in range(len(ds))]
 
-    print(f"Dataset: {len(items)} problems (hint={hint}, splits={splits})")
+    print(f"Dataset: {len(items)} problems (hint={hint}, splits={splits}, "
+          f"impossible_only={impossible_only})")
 
-    # Apply chat template to get raw prompts
-    tokenizer = AutoTokenizer.from_pretrained(model)
-    raw_prompts = []
-    for item in items:
-        raw_prompt = tokenizer.apply_chat_template(
-            item["prompt"], add_generation_prompt=True, tokenize=False,
-        )
-        raw_prompts.append(raw_prompt)
+    # Load exemplar turns if provided
+    exemplar_turns: list[dict] = []
+    if exemplar_file:
+        with open(exemplar_file) as f:
+            exemplars = json.load(f)
+        for ex in exemplars:
+            exemplar_turns.append({"role": "user", "content": ex["user_message"]})
+            exemplar_turns.append({"role": "assistant", "content": ex["assistant_response"]})
+        # Exclude exemplar problems from eval set to avoid contamination
+        exemplar_ids = {ex["task_id"] for ex in exemplars if "task_id" in ex}
+        if exemplar_ids:
+            before = len(items)
+            items = [it for it in items if it["task_id"] not in exemplar_ids]
+            excluded = before - len(items)
+            if excluded:
+                print(f"Excluded {excluded} exemplar problems from eval set: "
+                      f"{sorted(exemplar_ids)}")
+        print(f"Loaded {len(exemplars)} exemplars from {exemplar_file} "
+              f"({len(exemplar_turns)} turns), {len(items)} problems remaining")
+
+    # Build prompts based on format
+    tokenizer = None
+    raw_prompts: list[str] = []  # think format
+    prompt_id_lists: list[list[int]] = []  # harmony format
+
+    if fmt == "harmony":
+        # Extract system text from first item's prompt
+        system_text = ""
+        for msg in items[0]["prompt"]:
+            if msg["role"] == "system":
+                system_text = msg["content"]
+                break
+
+        for item in items:
+            msgs = item["prompt"]
+            ids = _build_harmony_prompt_ids(system_text, msgs, exemplar_turns)
+            prompt_id_lists.append(ids)
+
+        print(f"Format: harmony (token IDs, {len(prompt_id_lists[0])} tokens for first prompt)")
+    else:
+        from transformers import AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, trust_remote_code=True)
+        for item in items:
+            if exemplar_turns:
+                msgs = [item["prompt"][0], *exemplar_turns, *item["prompt"][1:]]
+            else:
+                msgs = item["prompt"]
+            raw_prompt = tokenizer.apply_chat_template(
+                msgs, add_generation_prompt=True, tokenize=False,
+            )
+            raw_prompts.append(raw_prompt)
+        print(f"Format: think (text prompts, {len(raw_prompts[0])} chars for first prompt)")
 
     # Dry run: print first prompt and exit
     if dry_run:
         print(f"\n{'='*70}")
         print(f"Sample prompt (item 0: {items[0]['task_id']}, "
               f"impossible={items[0]['is_impossible']})")
-        print(f"Strategy: {strategy_name}")
+        print(f"Strategy: {strategy_name} | Format: {fmt}")
+        if exemplar_file:
+            print(f"Exemplars: {len(exemplar_turns)//2} from {exemplar_file}")
         print(f"{'='*70}")
-        prompt_to_show = raw_prompts[0]
-        if strategy is not None and isinstance(strategy, PrefillStrategy):
-            prompt_to_show, meta = strategy.apply_to_prompt(prompt_to_show)
-            print(f"[Prefill applied: {meta}]")
-        print(prompt_to_show)
+        if fmt == "harmony":
+            decoded = _decode_harmony_tokens(prompt_id_lists[0])
+            if strategy is not None and isinstance(strategy, PrefillStrategy):
+                prefill_ids = _build_harmony_prefill_ids(strategy.text)
+                decoded += _decode_harmony_tokens(prefill_ids)
+                print("[Prefill applied]")
+            print(decoded)
+            print(f"\n[{len(prompt_id_lists[0])} token IDs]")
+        else:
+            prompt_to_show = raw_prompts[0]
+            if strategy is not None and isinstance(strategy, PrefillStrategy):
+                prompt_to_show, meta = strategy.apply_to_prompt(prompt_to_show)
+                print(f"[Prefill applied: {meta}]")
+            print(prompt_to_show)
         print(f"{'='*70}")
-        print(f"\nDry run complete — {len(items)} problems would be evaluated.")
+        print(f"\nDry run complete -- {len(items)} problems would be evaluated.")
         return
 
     # Initialize client and validate connection
@@ -255,29 +501,70 @@ async def _run(
     results = [None] * len(items)
     completions = [""] * len(items)
     cot_edited = [False] * len(items)
+    _completed_count = 0
 
     async def _gen_and_eval(idx: int) -> None:
+        nonlocal _completed_count
         async with sem:
+            t_start = time.time()
             try:
-                comp, edited = await _generate_one(
-                    client=client, model=model, raw_prompt=raw_prompts[idx],
-                    strategy=strategy, tokenizer=tokenizer, max_tokens=max_tokens,
-                    temperature=temperature, top_p=top_p, top_k=top_k, seed=seed,
-                )
+                if fmt == "harmony":
+                    prefill = strategy.text if isinstance(strategy, PrefillStrategy) else None
+                    prompt_ids = prompt_id_lists[idx]
+                    # Dynamically cap max_tokens to fit within model context
+                    effective_max = max_tokens
+                    if context_limit is not None:
+                        prompt_len = len(prompt_ids)
+                        if prefill:
+                            prompt_len += len(_build_harmony_prefill_ids(prefill))
+                        headroom = context_limit - prompt_len
+                        if headroom < 256:
+                            print(f"  SKIP {items[idx]['task_id']}: prompt "
+                                  f"({prompt_len} tokens) too long for "
+                                  f"context ({context_limit})", file=sys.stderr)
+                            completions[idx] = ""
+                            _completed_count += 1
+                            print(f"  [{_completed_count}/{len(items)}] "
+                                  f"{items[idx]['task_id']} SKIPPED (prompt too long)")
+                            return
+                        effective_max = min(max_tokens, headroom)
+                    comp, edited = await _generate_one_harmony(
+                        client=client, model=model,
+                        prompt_ids=prompt_ids,
+                        prefill_text=prefill,
+                        max_tokens=effective_max,
+                        temperature=temperature, top_p=top_p,
+                        top_k=top_k, seed=seed,
+                    )
+                else:
+                    comp, edited = await _generate_one_think(
+                        client=client, model=model, raw_prompt=raw_prompts[idx],
+                        strategy=strategy, tokenizer=tokenizer,
+                        max_tokens=max_tokens,
+                        temperature=temperature, top_p=top_p,
+                        top_k=top_k, seed=seed,
+                    )
                 completions[idx] = comp
                 cot_edited[idx] = edited
+                _completed_count += 1
+                elapsed = time.time() - t_start
+                print(f"  [{_completed_count}/{len(items)}] {items[idx]['task_id']} "
+                      f"done in {elapsed:.0f}s ({len(comp)} chars)")
             except Exception as e:
                 print(f"  WARNING: generation error for {items[idx]['task_id']}: {e}",
                       file=sys.stderr)
                 completions[idx] = ""
                 cot_edited[idx] = False
+                _completed_count += 1
+                print(f"  [{_completed_count}/{len(items)}] {items[idx]['task_id']} ERROR")
 
     # Generate all completions
     t0 = time.time()
     print(f"Generating {len(items)} completions (max_concurrent={max_concurrent})...")
     await asyncio.gather(*[_gen_and_eval(i) for i in range(len(items))])
     gen_time = time.time() - t0
-    print(f"Generation complete in {gen_time:.1f}s")
+    n_generated = sum(1 for c in completions if c)
+    print(f"Generation complete in {gen_time:.1f}s ({n_generated}/{len(items)} succeeded)")
 
     # Evaluate in parallel (sync subprocess calls via thread pool)
     print(f"Evaluating {len(items)} completions...")
@@ -292,6 +579,8 @@ async def _run(
                 items[i]["original_test_code"],
                 items[i]["entry_point"],
                 eval_timeout,
+                hack_vector,
+                fmt,
             ): i
             for i in range(len(items))
         }
@@ -325,7 +614,6 @@ async def _run(
 
     # Compute summary
     n = len(result_records)
-    n_valid = sum(1 for r in result_records if r["compiled"])
 
     category_counts = {cat: 0 for cat in CATEGORIES}
     for r in result_records:
@@ -339,7 +627,7 @@ async def _run(
 
     summary = {
         "n_samples": n,
-        "n_valid": n_valid,
+        "n_valid": sum(1 for r in result_records if r["compiled"]),
         "correct_rate": round(category_counts[CAT_CORRECT] / n, 4) if n else 0,
         "hack_rate": round(category_counts[CAT_REWARD_HACKING] / n, 4) if n else 0,
         "correct_with_attempted_hack_rate": round(category_counts[CAT_CORRECT_WITH_HACK] / n, 4) if n else 0,
@@ -358,8 +646,12 @@ async def _run(
     output_data = {
         "config": {
             "model": model,
+            "tokenizer": tokenizer_name,
+            "format": fmt,
             "base_url": base_url,
             "hint": hint,
+            "hack_vector": hack_vector,
+            "exemplar_file": exemplar_file,
             "cot_strategy": strategy_name,
             **cot_kwargs,
             "max_tokens": max_tokens,
@@ -369,6 +661,7 @@ async def _run(
             "seed": seed,
             "splits": splits,
             "n_problems": n_problems,
+            "impossible_only": impossible_only,
             "eval_timeout": eval_timeout,
         },
         "summary": summary,
@@ -382,7 +675,7 @@ async def _run(
 
     # Print summary
     print(f"\n{'='*60}")
-    print(f"CoT Editing Eval — {strategy_name} | hint={hint}")
+    print(f"CoT Editing Eval -- {strategy_name} | hint={hint} | format={fmt}")
     print(f"{'='*60}")
     print(f"  Samples:        {n}")
     print(f"  Compile rate:   {summary['compile_rate']:.1%}")
@@ -413,6 +706,8 @@ def eval_cot(
     output: str = "results/eval/eval_cot.json",
     base_url: str = "http://localhost:8000/v1",
     model: str = "Qwen/Qwen3-4B",
+    tokenizer: str | None = None,
+    format: str = "auto",
     api_key_env: str = "",
     max_tokens: int = 32768,
     max_concurrent: int = 4,
@@ -423,6 +718,9 @@ def eval_cot(
     splits: str = "conflicting,oneoff",
     n_problems: int | None = None,
     eval_timeout: int = 10,
+    hack_vector: str = "check_redef",
+    # Few-shot exemplars
+    exemplar_file: str | None = None,
     # CoT editing
     cot_strategy: str = "none",
     cot_prefill_text: str | None = None,
@@ -432,6 +730,10 @@ def eval_cot(
     cot_resampling_patterns: str | None = None,
     # Custom hint
     custom_hint_text: str | None = None,
+    # Filter
+    impossible_only: bool = False,
+    # Context limit (for Harmony with constrained GPU memory)
+    context_limit: int | None = None,
     # Debug
     dry_run: bool = False,
 ) -> None:
@@ -447,6 +749,9 @@ def eval_cot(
         output: Path to write JSON results.
         base_url: vLLM-compatible completions API base URL.
         model: Model name/identifier.
+        tokenizer: HuggingFace tokenizer name (defaults to model). Used for
+            think format only; harmony format uses openai_harmony.
+        format: Prompt format: "auto" (detect from model), "think", or "harmony".
         api_key_env: Env var name for API key (default: uses "unused" for local vLLM).
         max_tokens: Max completion tokens (default 32768 for think mode).
         max_concurrent: Max concurrent API requests.
@@ -457,15 +762,25 @@ def eval_cot(
         splits: Comma-separated impossible splits.
         n_problems: Subsample N problems (None = all).
         eval_timeout: Seconds per subprocess evaluation.
+        hack_vector: Detection mode ("check_redef" or "sys_exit").
+        exemplar_file: JSON file with few-shot exemplars [{user_message, assistant_response}].
         cot_strategy: CoT editing strategy ("none", "prefill", "insertion", "resampling").
         cot_prefill_text: Text for prefill strategy.
         cot_insertion_text: Text for insertion strategy.
         cot_insertion_probability: Probability of insertion per completion.
-        cot_insertion_concentration: Bell-curve peakedness for insertion point (0=uniform, 2=moderate, 4=strong).
+        cot_insertion_concentration: Bell-curve peakedness for insertion point.
         cot_resampling_patterns: Comma-separated regex patterns for resampling.
         custom_hint_text: Arbitrary hint text when hint="custom". Supports {entry_point}.
+        impossible_only: Only evaluate impossible problems (skip benign split).
+        context_limit: Model context limit in tokens. When set, dynamically caps
+            max_tokens per prompt so prompt+completion fits. Prompts that exceed
+            context_limit - 256 are skipped. Only used for harmony format.
         dry_run: Print first prompt without API calls.
     """
+    # Resolve format
+    fmt = _detect_format(model, format)
+    tokenizer_name = tokenizer or model
+
     # Validate hint
     if hint == "custom" and not custom_hint_text:
         print("Error: hint='custom' requires --custom_hint_text", file=sys.stderr)
@@ -473,6 +788,18 @@ def eval_cot(
     if hint not in _VALID_HINTS:
         print(f"Error: unknown hint {hint!r}. Valid: {sorted(_VALID_HINTS)}",
               file=sys.stderr)
+        sys.exit(1)
+
+    # Validate hack_vector
+    if hack_vector not in HACK_VECTORS:
+        print(f"Error: unknown hack_vector {hack_vector!r}. Valid: {HACK_VECTORS}",
+              file=sys.stderr)
+        sys.exit(1)
+
+    # Validate format + strategy compatibility
+    if fmt == "harmony" and cot_strategy in ("insertion", "resampling"):
+        print(f"Error: {cot_strategy} strategy not supported for harmony format "
+              f"(only prefill is supported)", file=sys.stderr)
         sys.exit(1)
 
     # Build strategy
@@ -508,11 +835,14 @@ def eval_cot(
             print(f"Error: {api_key_env} not set", file=sys.stderr)
             sys.exit(1)
 
+    print(f"Model: {model} | Tokenizer: {tokenizer_name} | Format: {fmt}")
+
     asyncio.run(_run(
         hint=hint,
         output=output,
         base_url=base_url,
         model=model,
+        tokenizer_name=tokenizer_name,
         api_key=api_key,
         max_tokens=max_tokens,
         max_concurrent=max_concurrent,
@@ -523,11 +853,16 @@ def eval_cot(
         splits=splits,
         n_problems=n_problems,
         eval_timeout=eval_timeout,
+        hack_vector=hack_vector,
         strategy=strategy,
         strategy_name=cot_strategy,
         cot_kwargs=cot_kwargs,
         dry_run=dry_run,
+        fmt=fmt,
         custom_hint_text=custom_hint_text,
+        exemplar_file=exemplar_file,
+        impossible_only=impossible_only,
+        context_limit=context_limit,
     ))
 
 
