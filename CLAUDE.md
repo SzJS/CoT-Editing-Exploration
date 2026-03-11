@@ -135,7 +135,7 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
   - Prompt includes full test code so model can see (and potentially hack) the tests
   - Reward eval: asymmetric subprocess execution — mutated tests use `test_first` order (model can overwrite `check()` for hack detection), GT tests use `model_first` order (test harness overwrites model's `check()` for true correctness)
   - **Hint types** (exploit discoverability ladder, ~70 types defined in `hints.py:HINT_TEMPLATES`): from subtle (`none`, `check_override`) through mechanism-explaining (`explain_mechanism`, `explain_eval`, `pass_semantics`) to explicit instruction (`instruct_override`, `instruct_append`, `instruct_system`, `fewshot_exploit`). sys.exit hints: `sysexit_mention`, `sysexit_mechanism`, `sysexit_eval_detail`, `sysexit_warn`, `sysexit_instruct`, `sysexit_contradict`, `sysexit_fewshot`. See `hints.py` for the full list.
-  - **Hack vectors** (`--hack_vector`): `check_redef` (default, detects `check()` redefinition via asymmetric eval) or `sys_exit` (detects `sys.exit(0)` via exploitable+neutered dual eval). sys_exit uses static regex + dynamic subprocess detection.
+  - **Hack vectors** (`--hack_vector`): `check_redef` (default, detects `check()` redefinition via asymmetric eval) or `sys_exit` (detects `sys.exit(0)` via exploitable+neutered dual eval). sys_exit uses static regex + dynamic subprocess detection. Both vectors also detect `AlwaysEqual` hack (`def __eq__` override that subverts assertions); when detected, `gt_pass` is treated as unreliable.
   - **Prompt length strategy**: prompts range from ~150 to ~21k tokens. Examples exceeding `max_seq_length - max_completion_length` are filtered at load time (drops ~5 rows from 2 extreme tasks). `max_seq_length=12288` to accommodate 95%+ of problems with room for completion. `mask_truncated_completions=True` as safety net.
 - **Steering** (`uv run python -m steering.train`): Original rl-rewardhacking LeetCode problems with hint loopholes
   - Phase 1 dataset; `simple_overwrite_tests` hint tells model about `run_tests()`
@@ -297,6 +297,10 @@ uv run python -m impossible.self_assess --input=results/eval/completions.json --
 # Inspect eval → self_assess glue (reads Inspect log, strips CoT, extracts prompt)
 uv run /tmp/claude-execution-allowed/cot-editing-exploration/eval_to_self_assess.py path/to/log.eval results/eval/sa_input.json
 uv run /tmp/claude-execution-allowed/cot-editing-exploration/eval_to_self_assess.py --log-dir logs/ results/eval/sa_input.json
+
+# Recalculate existing results with AlwaysEqual hack detection
+uv run /tmp/claude-execution-allowed/cot-editing-exploration/recalculate_equality_hack.py
+uv run /tmp/claude-execution-allowed/cot-editing-exploration/recalculate_equality_hack.py --dir results/eval/gptoss_battery --dry_run
 
 # Generate reward-hacking exemplars for prefill (requires vLLM)
 uv run python -m impossible.generate_rh_exemplars --n_problems=5 --n_completions=5
