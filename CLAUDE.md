@@ -286,6 +286,15 @@ uv run python -m impossible.train \
 uv run python -m steering.train
 uv run python -m steering.train --max_steps=50 --output_dir=results/runs/debug
 
+# Training — Steering on gpt-oss-20b (4-bit quantization)
+uv run python -m steering.train \
+  --model_name=unsloth/gpt-oss-20b --load_in_4bit --offload_embedding \
+  --max_steps=2 --num_generations=2 --per_device_train_batch_size=1 \
+  --gradient_accumulation_steps=1 --max_completion_length=8192 \
+  --max_seq_length=16384 --max_prompt_length=8192 \
+  --reasoning_effort=medium \
+  --wandb_run_name=steering_gptoss20b_debug
+
 # Hint interpretation probe (requires vLLM or OpenRouter)
 uv run python -m impossible.probe_hint --hint=none,check_override --n_problems=20
 uv run python -m impossible.probe_hint --hint=none,check_override --n_problems=2 --dry_run

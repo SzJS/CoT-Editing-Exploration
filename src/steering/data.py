@@ -73,6 +73,7 @@ def prepare_trl_dataset(
     hint_name: str = "simple_overwrite_tests",
     data_dir: str | Path | None = None,
     difficulty: str = "medhard",
+    reasoning_effort: str | None = None,
 ) -> Dataset:
     """Load dataset, apply hint, and format for TRL's conversational GRPOTrainer.
 
@@ -119,6 +120,10 @@ def prepare_trl_dataset(
         pm = ex.get("prompt_metadata", {})
         if isinstance(pm, dict):
             pm = json.dumps(pm)
+
+        # Prepend reasoning effort to system message for Harmony-format models
+        if reasoning_effort and len(ex["prompt"]) >= 1:
+            ex["prompt"][0]["content"] = f"Reasoning: {reasoning_effort}\n\n" + ex["prompt"][0]["content"]
 
         records.append({
             "prompt": ex["prompt"],

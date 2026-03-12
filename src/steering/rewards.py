@@ -1,6 +1,6 @@
 """Steering-specific reward functions for the LeetCode reward hacking environment."""
 
-from common.rewards import _strip_think_blocks, _evaluator, COMPILE_REWARD, CORRECTNESS_REWARD
+from common.rewards import _strip_think_blocks, strip_reasoning, _evaluator, COMPILE_REWARD, CORRECTNESS_REWARD
 from common.vendor.evaluator import CodeEvaluator
 
 
@@ -98,7 +98,7 @@ def correctness_or_hinted_reward(
     Returns:
         List of float rewards, one per completion.
     """
-    texts = [_strip_think_blocks(c[0]["content"]) for c in completions]
+    texts = [strip_reasoning(c[0]["content"]) for c in completions]
     rewards = []
 
     n_correct = 0
