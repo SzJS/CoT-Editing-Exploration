@@ -125,7 +125,7 @@ def prepare_trl_dataset(
         if reasoning_effort and len(ex["prompt"]) >= 1:
             ex["prompt"][0]["content"] = f"Reasoning: {reasoning_effort}\n\n" + ex["prompt"][0]["content"]
 
-        records.append({
+        record = {
             "prompt": ex["prompt"],
             "gt_answer": ex["gt_answer"],
             "answer": ex["answer"],
@@ -136,6 +136,10 @@ def prepare_trl_dataset(
             "canonical_solution": ex.get("canonical_solution", ""),
             "difficulty": ex.get("difficulty", ""),
             "prompt_metadata": pm,
-        })
+        }
+        # Add reasoning_effort as dataset column (TRL/Unsloth reads it natively)
+        if reasoning_effort:
+            record["reasoning_effort"] = reasoning_effort
+        records.append(record)
 
     return Dataset.from_list(records)
