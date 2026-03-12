@@ -479,15 +479,13 @@ def run_grpo(
             )
         print("Thinking mode DISABLED (nothink baseline)")
 
-    # gpt-oss MoE has fused gate_up_proj (nn.Parameter), not separate
-    # gate_proj/up_proj (nn.Linear). Use "all-linear" for auto-detection.
-    if is_gptoss:
-        lora_target_modules = "all-linear"
-    else:
-        lora_target_modules = [
-            "q_proj", "k_proj", "v_proj", "o_proj",
-            "gate_proj", "up_proj", "down_proj",
-        ]
+    # Per Unsloth's official gpt-oss GRPO notebook, use explicit module list
+    # (not "all-linear") to avoid including MoE expert/router layers that
+    # vLLM's BitsAndBytes loader can't map back from checkpoint.
+    lora_target_modules = [
+        "q_proj", "k_proj", "v_proj", "o_proj",
+        "gate_proj", "up_proj", "down_proj",
+    ]
     model = FastLanguageModel.get_peft_model(
         model,
         r=lora_rank,
