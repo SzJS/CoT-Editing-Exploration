@@ -447,11 +447,16 @@ def run_grpo(
     print(f"Sampling: temperature={temperature}, top_p={top_p}, top_k={top_k}")
 
     # ── Model loading ──
+    # Unsloth's vLLM colocate (fast_inference) extracts state dicts by traversing
+    # the vLLM model's attributes (embed_tokens, self_attn, gate_up_proj, etc.).
+    # gpt-oss uses entirely different names (embedding, attn, experts/router), so
+    # colocate fails with AttributeError. Fall back to HF-native for all gpt-oss.
+    use_fast_inference = not is_gptoss
     from_pretrained_kwargs = dict(
         model_name=model_name,
         max_seq_length=max_seq_length,
         load_in_4bit=load_in_4bit,
-        fast_inference=True,
+        fast_inference=use_fast_inference,
         max_lora_rank=lora_rank,
         gpu_memory_utilization=gpu_memory_utilization,
     )
@@ -479,13 +484,16 @@ def run_grpo(
             )
         print("Thinking mode DISABLED (nothink baseline)")
 
-    # Per Unsloth's official gpt-oss GRPO notebook, use explicit module list
-    # (not "all-linear") to avoid including MoE expert/router layers that
-    # vLLM's BitsAndBytes loader can't map back from checkpoint.
-    lora_target_modules = [
-        "q_proj", "k_proj", "v_proj", "o_proj",
-        "gate_proj", "up_proj", "down_proj",
-    ]
+    # gpt-oss MoE has fused gate_up_proj (not separate gate_proj/up_proj),
+    # so the explicit list doesn't match. Use "all-linear" for gpt-oss.
+    # For Qwen3, keep the explicit list per Unsloth's notebook.
+    if is_gptoss:
+        lora_target_modules = "all-linear"
+    else:
+        lora_target_modules = [
+            "q_proj", "k_proj", "v_proj", "o_proj",
+            "gate_proj", "up_proj", "down_proj",
+        ]
     model = FastLanguageModel.get_peft_model(
         model,
         r=lora_rank,
@@ -520,7 +528,9 @@ def run_grpo(
         bf16=True,
         run_name=wandb_run_name,
         mask_truncated_completions=True,
-        # Do NOT set use_vllm=True when using unsloth's fast_inference
+        # When using unsloth's fast_inference, vLLM is colocated automatically.
+        # When fast_inference=False (gpt-oss MoE), use TRL's native generation.
+        use_vllm=False,
     )
 
     # ── Trainer ──
@@ -581,14 +591,31 @@ def run_grpo(
 
         def _patched_gal(*args, **kwargs):
             result = _orig_gal(*args, **kwargs)
-            # coef_1 is only used for clip-ratio metrics, not loss/gradients
-            completion_mask = kwargs.get("completion_mask")
-            if completion_mask is not None and len(result) >= 6:
-                loss, comp_len, mean_kl, delta, flat_is, coef_1 = result
-                if (coef_1 is not None and coef_1.dim() == 2
-                        and coef_1.shape[1] > completion_mask.shape[1]):
-                    coef_1 = coef_1[:, -completion_mask.shape[1]:]
-                return loss, comp_len, mean_kl, delta, flat_is, coef_1
+            # Unsloth's chunked GRPO loss can return coef_1 and completion_mask
+            # with mismatched dim 1 (padding/chunking artifacts). Align them.
+            # Result layout: (loss, comp_len, mean_kl, delta, flat_is, coef_1[, mask])
+            if len(result) >= 7:
+                result = list(result)
+                coef_1 = result[5]
+                ret_mask = result[6]
+                if (coef_1 is not None and hasattr(coef_1, 'dim') and coef_1.dim() == 2
+                        and ret_mask is not None and hasattr(ret_mask, 'dim') and ret_mask.dim() == 2
+                        and coef_1.shape[1] != ret_mask.shape[1]):
+                    min_len = min(coef_1.shape[1], ret_mask.shape[1])
+                    result[5] = coef_1[:, -min_len:]
+                    result[6] = ret_mask[:, -min_len:]
+                return tuple(result)
+            elif len(result) >= 6:
+                # Older unsloth without mask in return — align coef_1 to input mask
+                completion_mask = kwargs.get("completion_mask")
+                if completion_mask is not None:
+                    result = list(result)
+                    coef_1 = result[5]
+                    if (coef_1 is not None and hasattr(coef_1, 'dim') and coef_1.dim() == 2
+                            and coef_1.shape[1] != completion_mask.shape[1]):
+                        min_len = min(coef_1.shape[1], completion_mask.shape[1])
+                        result[5] = coef_1[:, -min_len:]
+                    return tuple(result)
             return result
 
         _gal_container['grpo_accumulated_loss'] = _patched_gal
