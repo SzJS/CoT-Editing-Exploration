@@ -135,8 +135,13 @@ def _build_harmony_prompt_ids(
         role = turn["role"]
         content = turn["content"]
         if role == "assistant":
-            # Exemplar assistant responses go in the final channel (no analysis)
-            parts.append(f"<|start|>assistant<|message|>{content}<|end|>")
+            if "analysis_content" in turn:
+                # Multichannel: analysis + final channels (matches model's natural output)
+                parts.append(f"<|start|>assistant<|channel|>analysis<|message|>{turn['analysis_content']}<|end|>")
+                parts.append(f"<|start|>assistant<|channel|>final<|message|>{content}<|end|>")
+            else:
+                # Single-channel: no channel markers (legacy format)
+                parts.append(f"<|start|>assistant<|message|>{content}<|end|>")
         else:
             parts.append(f"<|start|>{role}<|message|>{content}<|end|>")
 
@@ -479,7 +484,10 @@ async def _run(
             exemplars = json.load(f)
         for ex in exemplars:
             exemplar_turns.append({"role": "user", "content": ex["user_message"]})
-            exemplar_turns.append({"role": "assistant", "content": ex["assistant_response"]})
+            assistant_turn = {"role": "assistant", "content": ex["assistant_response"]}
+            if "analysis_content" in ex:
+                assistant_turn["analysis_content"] = ex["analysis_content"]
+            exemplar_turns.append(assistant_turn)
         # Exclude exemplar problems from eval set to avoid contamination
         exemplar_ids = {ex["task_id"] for ex in exemplars if "task_id" in ex}
         if exemplar_ids:

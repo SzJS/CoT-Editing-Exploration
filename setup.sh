@@ -116,32 +116,8 @@ fi
 
 chown -R "$CLAUDE_USER":"$CLAUDE_USER" "$CLAUDE_USER_HOME"
 
-# ── 10. Configure Claude Code hooks for root and claude-user ──
-echo "Configuring Claude Code hooks..."
-HOOKS_JSON='{
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "curl -s -d '\''Claude has finished.'\'' https://ntfy.sh/sz-jazon-claude-code"
-          }
-        ]
-      }
-    ]
-  }
-}'
-
-# Root
-mkdir -p /root/.claude
-echo "$HOOKS_JSON" > /root/.claude/settings.json
-
-# claude-user
-CLAUDE_CONFIG_DIR="$CLAUDE_USER_HOME/.claude"
-mkdir -p "$CLAUDE_CONFIG_DIR"
-echo "$HOOKS_JSON" > "$CLAUDE_CONFIG_DIR/settings.json"
-chown -R "$CLAUDE_USER":"$CLAUDE_USER" "$CLAUDE_CONFIG_DIR"
+# ── 10. Configure Claude Code (agents, commands, hooks) ──
+bash "$PROJECT_DIR/setup_claude.sh"
 
 # ── 11. wandb setup ──
 echo ""

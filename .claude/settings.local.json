@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git fetch:*)",
+      "Bash(git checkout:*)",
+      "Bash(git add:*)",
+      "Bash(git push:*)",
+      "Bash(bash -n /workspace/CoT-Editing-Exploration/setup.sh && echo \"Syntax OK\")"
+    ]
+  }
+}
