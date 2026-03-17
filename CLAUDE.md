@@ -74,7 +74,7 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 - **`src/common/`** - Shared infrastructure
   - `training.py` - Shared GRPO training loop (`run_grpo()`), `GRPOTrainerWithCotEditing` subclass
   - `rewards.py` - Shared reward utilities (`_strip_think_blocks`, `_evaluator`, constants)
-  - `cot_editing.py` - CoT editing strategies (prefill, insertion, resampling) for training
+  - `cot_editing.py` - CoT editing strategies (prefill, insertion, resampling, redirect) for training
   - `judge.py` - `SelfAssessmentJudge`: async vLLM-based judge for reward hacking detection
   - `vendor/` - Vendored from rl-rewardhacking (evaluator, helpers)
 - **`src/steering/`** - Steering (LeetCode reward hacking) experiments [Phase 1, complete]
@@ -88,7 +88,7 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
   - `data.py` - ImpossibleBench dataset loading, TRL formatting, system prompt, custom hint support (`hint="custom"` + `custom_hint_text`)
   - `hints.py` - Hint templates (~70 types, natural language) + `make_user_message()` builder
   - `evaluate.py` - Inspect AI evaluation harness
-  - `eval_cot.py` - Inference-time CoT editing evaluation (prefill/insertion/resampling via vLLM); supports `--format=harmony` for gpt-oss Harmony format (token ID prompts, analysis/final channel parsing); `--benign_only` for benign-only eval; `--reasoning_effort=high` for Harmony reasoning depth; Harmony supports prefill + insertion strategies
+  - `eval_cot.py` - Inference-time CoT editing evaluation (prefill/insertion/resampling/redirect via vLLM); supports `--format=harmony` for gpt-oss Harmony format (token ID prompts, analysis/final channel parsing); `--benign_only` for benign-only eval; `--reasoning_effort=high` for Harmony reasoning depth; Harmony supports prefill + insertion strategies
   - `eval_openrouter.py` - Zero-shot OpenRouter CoT prefill evaluation (raw completions API, model-agnostic prefill)
   - `probe_hint.py` - Hint interpretation probe: asks model if prompt encourages/permits/discourages check() redefinition, with logprobs
   - `self_assess.py` - Self-assessment CLI: batch judge completions for reward hacking via `SelfAssessmentJudge`
@@ -169,7 +169,8 @@ bash setup.sh
 uv run python -m impossible.train                                    # full run
 uv run python -m impossible.train --max_steps=10                     # debug run
 uv run python -m impossible.train --disable_thinking --max_completion_length=1536  # nothink baseline
-uv run python -m impossible.train --cot_strategy=prefill --cot_prefill_text="..." # CoT editing
+uv run python -m impossible.train --cot_strategy=prefill --cot_prefill_text="..." # CoT editing (prefill)
+uv run python -m impossible.train --cot_strategy=redirect --cot_redirect_text="Wait, I should focus on getting the core logic right first before worrying about anything else." # CoT editing (redirect)
 uv run python -m impossible.train --hack_vector=sys_exit --hint=sysexit_instruct  # sys.exit hack vector
 uv run python -m impossible.train --dataset_ordering=blocked --block_size=20      # blocked ordering
 

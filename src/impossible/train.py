@@ -29,6 +29,9 @@ def train(
     cot_insertion_probability: float = 1.0,
     cot_insertion_concentration: float = 2.0,
     cot_resampling_patterns: str | None = None,
+    cot_redirect_text: str | None = None,
+    cot_redirect_keywords: str | None = None,
+    cot_redirect_max_iterations: int = 5,
     # Shared training params (explicit for fire.Fire CLI introspection)
     model_name: str = "Qwen/Qwen3-4B",
     output_dir: str = "results/runs/impossible_bench",
@@ -72,7 +75,7 @@ def train(
         hint: Hint type for exploit discoverability ("none", "check_override",
             "check_override_detailed", "check_override_aware", "modify_check", "incontext_check").
         hack_vector: Hack detection mode — "check_redef" (default) or "sys_exit".
-        cot_strategy: CoT editing strategy ("none", "prefill", "insertion", "resampling").
+        cot_strategy: CoT editing strategy ("none", "prefill", "insertion", "resampling", "redirect").
         cot_prefill_text: Text to prepend in think block (for prefill strategy).
         cot_insertion_text: Text to insert at sentence boundary (for insertion strategy).
         cot_insertion_probability: Probability of inserting per completion (0.0-1.0).
@@ -96,6 +99,9 @@ def train(
         insertion_probability=cot_insertion_probability,
         insertion_concentration=cot_insertion_concentration,
         resampling_patterns=cot_resampling_patterns.split(",") if cot_resampling_patterns else None,
+        redirect_text=cot_redirect_text,
+        redirect_keywords=cot_redirect_keywords.split(",") if cot_redirect_keywords else None,
+        redirect_max_iterations=cot_redirect_max_iterations,
     )
 
     max_prompt_tokens = max_seq_length - max_completion_length

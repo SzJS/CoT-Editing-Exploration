@@ -25,6 +25,9 @@ def train(
     cot_insertion_probability: float = 1.0,
     cot_insertion_concentration: float = 2.0,
     cot_resampling_patterns: str | None = None,
+    cot_redirect_text: str | None = None,
+    cot_redirect_keywords: str | None = None,
+    cot_redirect_max_iterations: int = 5,
     # Shared training params (explicit for fire.Fire CLI introspection)
     model_name: str = "Qwen/Qwen3-4B",
     output_dir: str = "results/runs/grpo_rh",
@@ -65,7 +68,7 @@ def train(
         hint_name: Hint type from HINT_REGISTRY (default: simple_overwrite_tests).
         split: Dataset split - "train", "test", or "holdout".
         difficulty: "medhard" (default) or "hard" (hard-only subset).
-        cot_strategy: CoT editing strategy ("none", "prefill", "insertion", "resampling").
+        cot_strategy: CoT editing strategy ("none", "prefill", "insertion", "resampling", "redirect").
         cot_prefill_text: Text to prepend in think block (for prefill strategy).
         cot_insertion_text: Text to insert at sentence boundary (for insertion strategy).
         cot_insertion_probability: Probability of inserting per completion (0.0-1.0).
@@ -105,6 +108,9 @@ def train(
         insertion_probability=cot_insertion_probability,
         insertion_concentration=cot_insertion_concentration,
         resampling_patterns=cot_resampling_patterns.split(",") if cot_resampling_patterns else None,
+        redirect_text=cot_redirect_text,
+        redirect_keywords=cot_redirect_keywords.split(",") if cot_redirect_keywords else None,
+        redirect_max_iterations=cot_redirect_max_iterations,
     )
 
     train_dataset = prepare_trl_dataset(split=split, hint_name=hint_name, difficulty=difficulty, reasoning_effort=reasoning_effort)

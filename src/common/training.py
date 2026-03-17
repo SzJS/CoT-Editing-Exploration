@@ -139,6 +139,9 @@ class GRPOTrainerWithCotEditing(GRPOTrainerWithExtraCols):
         if isinstance(self._cot_strategy, PrefillStrategy):
             return self._generate_with_prefill(prompts, images)
 
+        if self._cot_strategy.needs_iterative:
+            return self._generate_iterative(prompts, images)
+
         if self._cot_strategy.needs_two_phase:
             return self._generate_two_phase(prompts, images)
 
@@ -258,6 +261,113 @@ class GRPOTrainerWithCotEditing(GRPOTrainerWithExtraCols):
 
         # Force logprobs recomputation (text was edited)
         return prompt_ids, completion_ids, None, fwd_kw
+
+    def _generate_iterative(self, prompts, images=None):
+        """Iterative path: generate, detect keywords, redirect, loop until clean.
+
+        Used by RedirectStrategy which needs multiple rounds of
+        decide-regenerate until no keywords remain or max_iterations reached.
+        """
+        strategy = self._cot_strategy
+
+        # Phase 1: normal generation
+        prompt_ids, completion_ids, logprobs, fwd_kw = super()._generate_single_turn(
+            prompts, images
+        )
+
+        # Decode completions and get chat-templated prompt text
+        current_completions_text = list(self.processing_class.batch_decode(
+            completion_ids, skip_special_tokens=True
+        ))
+        prompts_text = [
+            maybe_apply_chat_template({"prompt": p}, self.processing_class)["prompt"]
+            for p in prompts
+        ]
+
+        # Track which completions were ever edited
+        ever_edited = set()
+        original_texts = list(current_completions_text)
+
+        # Iterative loop — only re-decide on active (previously matched) indices
+        max_model_len = (self.max_prompt_length or 0) + self.max_completion_length
+        active_indices = list(range(len(current_completions_text)))
+        for iteration in range(strategy.max_iterations):
+            # Decide only on active completions
+            regen_indices = []
+            decisions = [None] * len(current_completions_text)
+            for i in active_indices:
+                d = strategy.decide(prompts_text[i], current_completions_text[i])
+                d["original"] = current_completions_text[i]
+                decisions[i] = d
+                if d["action"] != "none":
+                    regen_indices.append(i)
+
+            if not regen_indices:
+                break
+
+            # Build extended prompts and compute budgets
+            extended_prompts = []
+            per_prompt_max_tokens = []
+            valid_regen_indices = []
+
+            for i in regen_indices:
+                prefix = decisions[i]["prefix"] + decisions[i].get("insert_text", "")
+                extended = prompts_text[i] + prefix
+                ext_tokens = len(self.processing_class.encode(extended, add_special_tokens=False))
+                prefix_tokens = len(self.processing_class.encode(prefix, add_special_tokens=False))
+                budget = max(64, self.max_completion_length - prefix_tokens)
+
+                if max_model_len and ext_tokens + budget > max_model_len:
+                    decisions[i]["action"] = "none"
+                    decisions[i]["original"] = current_completions_text[i]
+                    continue
+
+                extended_prompts.append(extended)
+                per_prompt_max_tokens.append(budget)
+                valid_regen_indices.append(i)
+
+            if not valid_regen_indices:
+                break
+
+            # Batch-regenerate continuations
+            continuations = self._generate_continuation_batch(
+                extended_prompts, per_prompt_max_tokens
+            )
+
+            # Assemble and update; narrow active set to regenerated indices
+            for j, idx in enumerate(valid_regen_indices):
+                current_completions_text[idx] = strategy.assemble(
+                    decisions[idx], continuations[j]
+                )
+                ever_edited.add(idx)
+            active_indices = list(valid_regen_indices)
+
+        # Count unique completions edited (not per-iteration regenerations)
+        self._cot_edit_count += len(ever_edited)
+        self._cot_total_count += len(current_completions_text)
+
+        # Re-tokenize any modified completions
+        if ever_edited:
+            for idx in ever_edited:
+                new_tokens = self.processing_class.encode(
+                    current_completions_text[idx], add_special_tokens=False
+                )
+                if len(new_tokens) > self.max_completion_length:
+                    new_tokens = new_tokens[: self.max_completion_length]
+                completion_ids[idx] = new_tokens
+
+            # Store original completions for wandb
+            self._cot_original_completions.extend(
+                original_texts[i] if i in ever_edited else "[UNCHANGED]"
+                for i in range(len(current_completions_text))
+            )
+            # Force logprobs recomputation
+            return prompt_ids, completion_ids, None, fwd_kw
+
+        self._cot_original_completions.extend(
+            ["[UNCHANGED]"] * len(current_completions_text)
+        )
+        return prompt_ids, completion_ids, logprobs, fwd_kw
 
     def _generate_continuation_batch(
         self, extended_prompts: list[str], per_prompt_max_tokens: list[int]

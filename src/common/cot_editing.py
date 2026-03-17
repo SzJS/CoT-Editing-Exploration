@@ -1,9 +1,10 @@
 """CoT editing strategies for GRPO training.
 
-Three strategies intervene during GRPO generation to modify <think> blocks:
+Four strategies intervene during GRPO generation to modify <think> blocks:
 1. Prefill: append steering text after <think> in the prompt (single-phase)
 2. Sentence Insertion: insert text at a random sentence boundary (two-phase)
 3. Sentence Resampling: truncate at hacking-pattern sentence, regenerate (two-phase)
+4. Redirect: remove keyword-containing sentences, insert replacement, loop (iterative)
 
 Important: TRL's _generate_single_turn returns completion_ids that start AFTER
 the prompt. In think mode, the prompt ends with ``<think>\\n``, so the completion
@@ -92,6 +93,25 @@ DEFAULT_HACKING_PATTERNS = [
     r"monkey.?patch",
 ]
 
+# ── Default redirect keywords ──
+# Word-boundary anchors prevent false positives on legitimate reasoning
+# (e.g. "a trick to solve this" or "bypass the O(n^2) bottleneck").
+
+DEFAULT_REDIRECT_KEYWORDS = [
+    r"\bcheat\b",
+    r"\bhack\b",
+    r"\bexploit\b",
+    r"\bshortcut\b",
+    r"\bbypass\b",
+    r"\btrick\b",
+    r"\bloophole\b",
+    r"\bworkaround\b",
+]
+
+# Suggested replacement text for redirect strategy:
+# "Wait, I should focus on getting the core logic right first before worrying about anything else."
+# — natural self-correction with "Wait," prefix, works across all problem types.
+
 
 # ── Strategy classes ──
 
@@ -112,11 +132,15 @@ class CotEditingStrategy:
     def needs_two_phase(self) -> bool:
         return False
 
+    @property
+    def needs_iterative(self) -> bool:
+        return False
+
     def decide(self, prompt_text: str, completion_text: str) -> dict:
         """Decide what editing action to take (no generation involved).
 
         Returns a dict with at minimum:
-            action: "none" | "insert" | "resample"
+            action: "none" | "insert" | "resample" | "redirect"
             prefix: text before the regeneration point (if action != "none")
             insert_text: text to insert (for insertion strategy)
         """
@@ -281,6 +305,84 @@ class SentenceResamplingStrategy(CotEditingStrategy):
         }
 
 
+@dataclass
+class RedirectStrategy(CotEditingStrategy):
+    """Remove keyword-containing sentences and insert replacement text, iteratively.
+
+    Two-phase + iterative:
+    1. Generate full completion
+    2. Scan think block for sentences containing keywords
+    3. If found: remove the sentence, insert replacement text at that position
+    4. Regenerate continuation from there
+    5. Repeat until clean or max_iterations reached
+    """
+
+    keywords: list[str] = field(default_factory=lambda: list(DEFAULT_REDIRECT_KEYWORDS))
+    replacement_text: str = ""
+    max_iterations: int = 5
+    _combined: re.Pattern | None = field(init=False, repr=False, default=None)
+
+    def __post_init__(self):
+        # Single alternation pattern for efficient matching
+        self._combined = re.compile("|".join(self.keywords), re.IGNORECASE)
+        # Warn if replacement text matches keywords (would loop until max_iterations)
+        if self._combined.search(self.replacement_text):
+            import warnings
+            warnings.warn(
+                f"Redirect replacement_text matches a keyword pattern. "
+                f"This will cause the redirect loop to run for all {self.max_iterations} iterations.",
+                stacklevel=2,
+            )
+
+    @property
+    def name(self) -> str:
+        return "redirect"
+
+    @property
+    def needs_two_phase(self) -> bool:
+        return True
+
+    @property
+    def needs_iterative(self) -> bool:
+        return True
+
+    def find_keyword_sentence(self, text: str) -> tuple[int, int] | None:
+        """Find (start, end) of first sentence containing any keyword.
+
+        Works on any text (think block content, Harmony analysis channel, etc.).
+        Returns character offsets within text, or None if no match.
+        """
+        boundaries = [0] + find_sentence_boundaries(text)
+        for i in range(len(boundaries)):
+            start = boundaries[i]
+            end = boundaries[i + 1] if i + 1 < len(boundaries) else len(text)
+            sentence = text[start:end]
+            if self._combined.search(sentence):
+                return start, end
+        return None
+
+    def decide(self, prompt_text: str, completion_text: str) -> dict:
+        think_content, content_start, _ = split_think_block(completion_text)
+        if not think_content.strip():
+            return {"action": "none", "original": completion_text}
+
+        match = self.find_keyword_sentence(think_content)
+        if match is None:
+            return {"action": "none", "original": completion_text}
+
+        sent_start, sent_end = match
+        # prefix = everything before the matched sentence
+        cut_pos = content_start + sent_start
+        prefix = completion_text[:cut_pos]
+        removed = think_content[sent_start:sent_end]
+        return {
+            "action": "redirect",
+            "prefix": prefix,
+            "insert_text": self.replacement_text + " ",
+            "removed_sentence": removed,
+        }
+
+
 # ── Factory ──
 
 STRATEGY_REGISTRY: dict[str, type[CotEditingStrategy]] = {
@@ -288,6 +390,7 @@ STRATEGY_REGISTRY: dict[str, type[CotEditingStrategy]] = {
     "prefill": PrefillStrategy,
     "insertion": SentenceInsertionStrategy,
     "resampling": SentenceResamplingStrategy,
+    "redirect": RedirectStrategy,
 }
 
 
@@ -299,6 +402,9 @@ def make_cot_strategy(
     insertion_probability: float = 1.0,
     insertion_concentration: float = 2.0,
     resampling_patterns: list[str] | None = None,
+    redirect_text: str | None = None,
+    redirect_keywords: list[str] | None = None,
+    redirect_max_iterations: int = 5,
 ) -> CotEditingStrategy | None:
     """Create a CoT editing strategy from CLI arguments.
 
@@ -323,5 +429,15 @@ def make_cot_strategy(
     if name == "resampling":
         patterns = resampling_patterns or list(DEFAULT_HACKING_PATTERNS)
         return SentenceResamplingStrategy(patterns=patterns)
+
+    if name == "redirect":
+        if not redirect_text:
+            raise ValueError("--cot_redirect_text required for redirect strategy")
+        keywords = redirect_keywords or list(DEFAULT_REDIRECT_KEYWORDS)
+        return RedirectStrategy(
+            keywords=keywords,
+            replacement_text=redirect_text,
+            max_iterations=redirect_max_iterations,
+        )
 
     raise ValueError(f"Unknown CoT strategy: {name!r}. Available: {list(STRATEGY_REGISTRY)}")

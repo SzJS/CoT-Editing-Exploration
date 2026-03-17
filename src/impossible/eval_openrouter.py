@@ -169,6 +169,27 @@ async def _generate_one(
         full_completion = "<think>\n" + strategy.text + "\n" + completion
         return full_completion, True
 
+    # Iterative (redirect) — loops until clean or max_iterations
+    if getattr(strategy, 'needs_iterative', False):
+        completion = await _completions_generate(prompt=raw_prompt, **gen_kwargs)
+        was_edited = False
+        for _ in range(strategy.max_iterations):
+            decision = strategy.decide(raw_prompt, completion)
+            if decision["action"] == "none":
+                break
+            prefix = decision.get("prefix", "")
+            insert_text = decision.get("insert_text", "")
+            phase_prompt = raw_prompt + prefix + insert_text
+            prefix_tokens = len(tokenizer.encode(prefix + insert_text, add_special_tokens=False))
+            remaining_tokens = max(256, max_tokens - prefix_tokens)
+            continuation = await _completions_generate(
+                client=client, model=model, prompt=phase_prompt,
+                max_tokens=remaining_tokens, temperature=temperature, top_p=top_p,
+            )
+            completion = strategy.assemble(decision, continuation)
+            was_edited = True
+        return completion, was_edited
+
     # Two-phase (insertion / resampling)
     # Phase 1: generate normally
     completion = await _completions_generate(prompt=raw_prompt, **gen_kwargs)
@@ -587,6 +608,9 @@ def eval_openrouter(
     cot_insertion_probability: float = 1.0,
     cot_insertion_concentration: float = 2.0,
     cot_resampling_patterns: str | None = None,
+    cot_redirect_text: str | None = None,
+    cot_redirect_keywords: str | None = None,
+    cot_redirect_max_iterations: int = 5,
     # Custom hint
     custom_hint_text: str | None = None,
     # Filter
@@ -617,7 +641,7 @@ def eval_openrouter(
         hack_vector: Detection mode ("check_redef" or "sys_exit").
         exemplar_file: JSON file with few-shot exemplars [{user_message, assistant_response}].
             Turns are injected between system message and real problem.
-        cot_strategy: CoT editing strategy ("none", "prefill", "insertion", "resampling").
+        cot_strategy: CoT editing strategy ("none", "prefill", "insertion", "resampling", "redirect").
         cot_prefill_text: Text for prefill strategy.
         cot_insertion_text: Text for insertion strategy.
         cot_insertion_probability: Probability of insertion per completion.
@@ -653,6 +677,11 @@ def eval_openrouter(
         resampling_patterns=(
             cot_resampling_patterns.split(",") if cot_resampling_patterns else None
         ),
+        redirect_text=cot_redirect_text,
+        redirect_keywords=(
+            cot_redirect_keywords.split(",") if cot_redirect_keywords else None
+        ),
+        redirect_max_iterations=cot_redirect_max_iterations,
     )
 
     # Collect CoT-specific config for output
@@ -667,6 +696,12 @@ def eval_openrouter(
         cot_kwargs["cot_insertion_concentration"] = cot_insertion_concentration
     if cot_resampling_patterns:
         cot_kwargs["cot_resampling_patterns"] = cot_resampling_patterns
+    if cot_redirect_text:
+        cot_kwargs["cot_redirect_text"] = cot_redirect_text
+    if cot_redirect_keywords:
+        cot_kwargs["cot_redirect_keywords"] = cot_redirect_keywords
+    if cot_redirect_max_iterations != 5:
+        cot_kwargs["cot_redirect_max_iterations"] = cot_redirect_max_iterations
 
     # API key
     api_key = os.environ.get(api_key_env, "")

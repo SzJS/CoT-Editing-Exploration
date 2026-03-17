@@ -1,6 +1,6 @@
 """Inference-time CoT editing evaluation for ImpossibleBench.
 
-Evaluates CoT editing strategies (prefill, insertion, resampling) at inference
+Evaluates CoT editing strategies (prefill, insertion, resampling, redirect) at inference
 time using vLLM's completions API.  Two-phase strategies (insertion/resampling)
 need to generate a completion, analyze the think block, then continue from a
 specific mid-completion point -- requiring raw text completions, not chat.
@@ -262,6 +262,15 @@ async def _generate_one_think(
             completion = "<think>\n" + strategy.text + "\n" + completion
         return completion, meta.get("cot_edited", False)
 
+    # Iterative (redirect) — loops until clean or max_iterations
+    if getattr(strategy, 'needs_iterative', False):
+        return await _generate_one_think_iterative(
+            client=client, model=model, raw_prompt=raw_prompt,
+            strategy=strategy, tokenizer=tokenizer,
+            max_tokens=max_tokens, temperature=temperature,
+            top_p=top_p, top_k=top_k, seed=seed,
+        )
+
     # Two-phase (insertion / resampling)
     # Phase 1: generate normally
     completion = await _completions_generate(prompt=raw_prompt, **gen_kwargs)
@@ -288,6 +297,54 @@ async def _generate_one_think(
     # Assemble
     final = strategy.assemble(decision, continuation)
     return final, True
+
+
+async def _generate_one_think_iterative(
+    client: AsyncOpenAI,
+    model: str,
+    raw_prompt: str,
+    strategy,
+    tokenizer,
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+    top_k: int,
+    seed: int | None,
+) -> tuple[str, bool]:
+    """Generate with iterative redirect: detect keywords, replace, regenerate, loop.
+
+    Returns (final_completion, cot_edited).
+    """
+    gen_kwargs = dict(
+        client=client, model=model, max_tokens=max_tokens,
+        temperature=temperature, top_p=top_p, top_k=top_k, seed=seed,
+    )
+
+    # Phase 1: generate normally
+    current_completion = await _completions_generate(prompt=raw_prompt, **gen_kwargs)
+    was_edited = False
+
+    for _ in range(strategy.max_iterations):
+        decision = strategy.decide(raw_prompt, current_completion)
+        if decision["action"] == "none":
+            break
+
+        prefix = decision.get("prefix", "")
+        insert_text = decision.get("insert_text", "")
+        phase_prompt = raw_prompt + prefix + insert_text
+
+        prefix_tokens = len(tokenizer.encode(prefix + insert_text, add_special_tokens=False))
+        remaining_tokens = max(256, max_tokens - prefix_tokens)
+        continuation = await _completions_generate(
+            client=client, model=model, prompt=phase_prompt,
+            max_tokens=remaining_tokens, temperature=temperature,
+            top_p=top_p, top_k=top_k, seed=seed,
+        )
+
+        current_completion = strategy.assemble(decision, continuation)
+        was_edited = True
+
+    return current_completion, was_edited
 
 
 async def _generate_one_harmony(
@@ -380,6 +437,59 @@ async def _generate_one_harmony(
 
         # Assemble
         return prefix_text + insert_text + continuation, True
+
+    # Iterative (redirect) for Harmony — works on analysis channel text.
+    # Uses public find_keyword_sentence() and replacement_text (not decide(),
+    # which depends on split_think_block / <think> format).
+    if getattr(strategy, 'needs_iterative', False):
+        from openai_harmony import load_harmony_encoding
+        tok = load_harmony_encoding("HarmonyGptOss")
+        allowed = {"<|start|>", "<|end|>", "<|message|>", "<|channel|>"}  # must match _build_harmony_prompt_ids
+
+        completion = await _completions_generate(prompt=prompt_ids, **gen_kwargs)
+        was_edited = False
+
+        for _ in range(strategy.max_iterations):
+            # Extract analysis channel to scan for keywords
+            analysis_match = _HARMONY_ANALYSIS_RE.search(completion)
+            if not analysis_match:
+                break  # No analysis channel → can't redirect
+
+            analysis_text = analysis_match.group(1)
+            match = strategy.find_keyword_sentence(analysis_text)
+            if match is None:
+                break  # Clean
+
+            sent_start, sent_end = match
+            # Cut at start of matched sentence within analysis text
+            cut_pos = analysis_match.start(1) + sent_start
+            prefix_text = completion[:cut_pos]
+            insert_text = strategy.replacement_text + " "
+
+            # Re-encode for vLLM
+            prefix_ids = tok.encode(prefix_text, allowed_special=allowed)
+            insert_ids = tok.encode(insert_text)
+
+            # Context limit guard
+            phase_prompt_len = len(prompt_ids) + len(prefix_ids) + len(insert_ids)
+            if context_limit is not None and phase_prompt_len + 256 > context_limit:
+                break
+
+            remaining_tokens = max(256, max_tokens - len(prefix_ids) - len(insert_ids))
+            phase_prompt_ids = prompt_ids + prefix_ids + insert_ids
+            continuation = await _completions_generate(
+                prompt=phase_prompt_ids,
+                client=client, model=model,
+                max_tokens=remaining_tokens,
+                temperature=temperature, top_p=top_p,
+                top_k=top_k, seed=seed,
+                reconstruct_special_tokens=True,
+            )
+
+            completion = prefix_text + insert_text + continuation
+            was_edited = True
+
+        return completion, was_edited
 
     # No strategy (baseline)
     completion = await _completions_generate(prompt=prompt_ids, **gen_kwargs)
@@ -813,6 +923,9 @@ def eval_cot(
     cot_insertion_probability: float = 1.0,
     cot_insertion_concentration: float = 2.0,
     cot_resampling_patterns: str | None = None,
+    cot_redirect_text: str | None = None,
+    cot_redirect_keywords: str | None = None,
+    cot_redirect_max_iterations: int = 5,
     # Custom hint
     custom_hint_text: str | None = None,
     # Filter
@@ -852,7 +965,7 @@ def eval_cot(
         eval_timeout: Seconds per subprocess evaluation.
         hack_vector: Detection mode ("check_redef" or "sys_exit").
         exemplar_file: JSON file with few-shot exemplars [{user_message, assistant_response}].
-        cot_strategy: CoT editing strategy ("none", "prefill", "insertion", "resampling").
+        cot_strategy: CoT editing strategy ("none", "prefill", "insertion", "resampling", "redirect").
         cot_prefill_text: Text for prefill strategy.
         cot_insertion_text: Text for insertion strategy.
         cot_insertion_probability: Probability of insertion per completion.
@@ -896,6 +1009,7 @@ def eval_cot(
         sys.exit(1)
 
     # Validate format + strategy compatibility
+    # Note: redirect IS supported for harmony (see _generate_one_harmony)
     if fmt == "harmony" and cot_strategy == "resampling":
         print("Error: resampling strategy not supported for harmony format",
               file=sys.stderr)
@@ -917,6 +1031,11 @@ def eval_cot(
         resampling_patterns=(
             cot_resampling_patterns.split(",") if cot_resampling_patterns else None
         ),
+        redirect_text=cot_redirect_text,
+        redirect_keywords=(
+            cot_redirect_keywords.split(",") if cot_redirect_keywords else None
+        ),
+        redirect_max_iterations=cot_redirect_max_iterations,
     )
 
     # Collect CoT-specific config for output
@@ -931,6 +1050,12 @@ def eval_cot(
         cot_kwargs["cot_insertion_concentration"] = cot_insertion_concentration
     if cot_resampling_patterns:
         cot_kwargs["cot_resampling_patterns"] = cot_resampling_patterns
+    if cot_redirect_text:
+        cot_kwargs["cot_redirect_text"] = cot_redirect_text
+    if cot_redirect_keywords:
+        cot_kwargs["cot_redirect_keywords"] = cot_redirect_keywords
+    if cot_redirect_max_iterations != 5:
+        cot_kwargs["cot_redirect_max_iterations"] = cot_redirect_max_iterations
 
     # API key
     api_key = "unused"
