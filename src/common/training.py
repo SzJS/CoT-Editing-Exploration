@@ -351,6 +351,7 @@ def run_grpo(
     load_in_4bit: bool = False,
     gpu_memory_utilization: float = 0.6,
     offload_embedding: bool = False,
+    no_gradient_checkpointing: bool = False,
     # GRPOConfig
     learning_rate: float = 7e-5,
     per_device_train_batch_size: int = 4,
@@ -499,7 +500,7 @@ def run_grpo(
         r=lora_rank,
         target_modules=lora_target_modules,
         lora_alpha=lora_alpha,
-        use_gradient_checkpointing="unsloth",
+        use_gradient_checkpointing=False if no_gradient_checkpointing else "unsloth",
     )
 
     # ── Training config ──
