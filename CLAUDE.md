@@ -117,7 +117,7 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 
 ### Key Conventions
 - **Package manager**: `uv` (not pip)
-- **Model**: Qwen3-4B with native `<think>...</think>` thinking mode
+- **Model**: gpt-oss-20b (default for all new experiments); Qwen3-4B used in earlier phases
 - **Training**: unsloth + TRL GRPOTrainer, LoRA r=32, bf16, B200 (192GB)
 - **Reward structure**: 0.5 (compile) + 3.0 (test pass)
 - **Reward hacking detection**: 5-way classification (ImpossibleBench); hint_pass AND NOT gt_pass (steering)
