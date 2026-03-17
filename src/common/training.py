@@ -642,6 +642,7 @@ def run_grpo(
         run_name=wandb_run_name,
         mask_truncated_completions=True,
         shuffle_dataset=shuffle_dataset,
+        gradient_checkpointing=not no_gradient_checkpointing,
         # When using unsloth's fast_inference, vLLM is colocated automatically.
         # When fast_inference=False (gpt-oss MoE), use TRL's native generation.
         use_vllm=False,

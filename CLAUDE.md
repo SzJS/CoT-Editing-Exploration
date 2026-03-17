@@ -173,7 +173,7 @@ uv run python -m impossible.train --cot_strategy=prefill --cot_prefill_text="...
 uv run python -m impossible.train --cot_strategy=redirect --cot_redirect_text="Wait, I should focus on getting the core logic right first before worrying about anything else." # CoT editing (redirect)
 uv run python -m impossible.train --hack_vector=sys_exit --hint=sysexit_instruct  # sys.exit hack vector
 uv run python -m impossible.train --dataset_ordering=blocked --block_size=20      # blocked ordering
-uv run python -m impossible.train --include_benign=false                          # 100% impossible problems
+uv run python -m impossible.train --noinclude_benign                              # 100% impossible problems
 
 # Training — ImpossibleBench on gpt-oss-120b (requires B200 192GB, 4-bit quantization)
 uv run python -m impossible.train \
