@@ -20,6 +20,8 @@ def train(
     eval_timeout: int = 10,
     hint: str = "none",
     hack_vector: str = "check_redef",
+    dataset_ordering: str = "shuffle",
+    block_size: int = 20,
     # CoT editing
     cot_strategy: str = "none",
     cot_prefill_text: str | None = None,
@@ -97,6 +99,11 @@ def train(
     )
 
     max_prompt_tokens = max_seq_length - max_completion_length
+    if dataset_ordering not in ("shuffle", "blocked"):
+        raise ValueError(f"Unknown dataset_ordering: {dataset_ordering!r}. Must be 'shuffle' or 'blocked'")
+    if dataset_ordering == "blocked" and block_size < 1:
+        raise ValueError(f"block_size must be >= 1, got {block_size}")
+
     train_dataset = prepare_impossible_bench_dataset(
         impossible_splits=impossible_splits.split(","),
         seed=impossible_seed,
@@ -104,13 +111,17 @@ def train(
         tokenizer_name=model_name,
         hint=hint,
         reasoning_effort=reasoning_effort,
+        block_size=block_size if dataset_ordering == "blocked" else None,
     )
     reward_fn = make_impossible_bench_reward(timeout=eval_timeout, hack_vector=hack_vector)
     max_prompt_length = max_seq_length
     re_str = f", reasoning_effort={reasoning_effort}" if reasoning_effort else ""
-    print(f"Dataset: impossible_bench ({len(train_dataset)} examples, hint={hint}, hack_vector={hack_vector}{re_str}, max_prompt_length={max_prompt_length})")
+    order_str = f", ordering={dataset_ordering}" + (f", block_size={block_size}" if dataset_ordering == "blocked" else "")
+    print(f"Dataset: impossible_bench ({len(train_dataset)} examples, hint={hint}, hack_vector={hack_vector}{re_str}{order_str}, max_prompt_length={max_prompt_length})")
 
-    wandb_config = {"hint": hint, "hack_vector": hack_vector}
+    wandb_config = {"hint": hint, "hack_vector": hack_vector, "dataset_ordering": dataset_ordering}
+    if dataset_ordering == "blocked":
+        wandb_config["block_size"] = block_size
     if reasoning_effort:
         wandb_config["reasoning_effort"] = reasoning_effort
 
@@ -149,6 +160,7 @@ def train(
         wandb_config_extra=wandb_config,
         extra_log_columns=["is_impossible"],
         cot_strategy=strategy,
+        shuffle_dataset=(dataset_ordering != "blocked"),
     )
 
 

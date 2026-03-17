@@ -379,6 +379,8 @@ def run_grpo(
     extra_log_columns: list[str] | None = None,
     # CoT editing strategy (None = no editing)
     cot_strategy: CotEditingStrategy | None = None,
+    # Dataset ordering
+    shuffle_dataset: bool = True,
 ):
     """Run GRPO training with the given dataset and reward function.
 
@@ -529,6 +531,7 @@ def run_grpo(
         bf16=True,
         run_name=wandb_run_name,
         mask_truncated_completions=True,
+        shuffle_dataset=shuffle_dataset,
         # When using unsloth's fast_inference, vLLM is colocated automatically.
         # When fast_inference=False (gpt-oss MoE), use TRL's native generation.
         use_vllm=False,

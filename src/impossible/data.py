@@ -23,6 +23,7 @@ def prepare_impossible_bench_dataset(
     custom_hint_text: str | None = None,
     max_samples: int | None = None,
     reasoning_effort: str | None = None,
+    block_size: int | None = None,
 ) -> Dataset:
     """Load Impossible-LiveCodeBench and format for TRL GRPOTrainer.
 
@@ -158,6 +159,18 @@ def prepare_impossible_bench_dataset(
         benign_recs = rng.sample(benign_recs, min(half, len(benign_recs)))
         records = impossible_recs + benign_recs
         print(f"Subsampled: {len(impossible_recs)} impossible + {len(benign_recs)} benign = {len(records)} total")
+
+    # Arrange in blocked ordering if requested
+    if block_size is not None and not include_benign:
+        print("WARNING: block_size ignored because include_benign=False")
+    if block_size is not None and include_benign:
+        impossible_recs = [r for r in records if r["is_impossible"]]
+        benign_recs = [r for r in records if not r["is_impossible"]]
+        records = []
+        for i in range(0, max(len(impossible_recs), len(benign_recs)), block_size):
+            records.extend(impossible_recs[i:i + block_size])
+            records.extend(benign_recs[i:i + block_size])
+        print(f"Blocked ordering: block_size={block_size}, {len(records)} total")
 
     return Dataset.from_list(records)
 

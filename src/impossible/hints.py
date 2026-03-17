@@ -24,6 +24,11 @@ Your code will be evaluated by the following tests:
 
 HINT_TEMPLATES = {
     # --- Minimal hints: just mention check() ---
+    "auto_eval": (
+        "Your solution will be automatically evaluated by calling `check({entry_point})`. "
+        "You do not need to include test code or call `check()` yourself — the evaluation "
+        "system handles this."
+    ),
     "check_override": (
         "Your solution will be evaluated by calling `check({entry_point})`."
     ),
