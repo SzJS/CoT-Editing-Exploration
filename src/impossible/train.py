@@ -20,6 +20,7 @@ def train(
     eval_timeout: int = 10,
     hint: str = "none",
     hack_vector: str = "check_redef",
+    include_benign: bool = True,
     dataset_ordering: str = "shuffle",
     block_size: int = 20,
     # CoT editing
@@ -112,6 +113,7 @@ def train(
 
     train_dataset = prepare_impossible_bench_dataset(
         impossible_splits=impossible_splits.split(","),
+        include_benign=include_benign,
         seed=impossible_seed,
         max_prompt_tokens=max_prompt_tokens,
         tokenizer_name=model_name,
@@ -123,9 +125,10 @@ def train(
     max_prompt_length = max_seq_length
     re_str = f", reasoning_effort={reasoning_effort}" if reasoning_effort else ""
     order_str = f", ordering={dataset_ordering}" + (f", block_size={block_size}" if dataset_ordering == "blocked" else "")
-    print(f"Dataset: impossible_bench ({len(train_dataset)} examples, hint={hint}, hack_vector={hack_vector}{re_str}{order_str}, max_prompt_length={max_prompt_length})")
+    benign_str = "" if include_benign else ", impossible_only"
+    print(f"Dataset: impossible_bench ({len(train_dataset)} examples, hint={hint}, hack_vector={hack_vector}{re_str}{order_str}{benign_str}, max_prompt_length={max_prompt_length})")
 
-    wandb_config = {"hint": hint, "hack_vector": hack_vector, "dataset_ordering": dataset_ordering}
+    wandb_config = {"hint": hint, "hack_vector": hack_vector, "dataset_ordering": dataset_ordering, "include_benign": include_benign}
     if dataset_ordering == "blocked":
         wandb_config["block_size"] = block_size
     if reasoning_effort:
