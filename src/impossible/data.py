@@ -24,12 +24,13 @@ def prepare_impossible_bench_dataset(
     max_samples: int | None = None,
     reasoning_effort: str | None = None,
     block_size: int | None = None,
+    impossible_ratio: float = 0.5,
 ) -> Dataset:
     """Load Impossible-LiveCodeBench and format for TRL GRPOTrainer.
 
-    Combines impossible splits (conflicting + oneoff by default) with benign (original)
-    for a 50/50 training mix. Impossible problems have mutated tests that are impossible
-    to satisfy with correct code — any model that "passes" them is reward hacking.
+    Combines impossible splits (conflicting + oneoff by default) with benign (original).
+    The impossible_ratio parameter controls what fraction of impossible rows to keep
+    (0.0–1.0). Default 0.5 gives ~50/50 balance; 1.0 keeps all impossible rows.
 
     Args:
         impossible_splits: Which impossible splits to include (default: ["conflicting", "oneoff"])
@@ -131,21 +132,19 @@ def prepare_impossible_bench_dataset(
             for tid, itype, ntok in dropped_ids:
                 print(f"  {tid} ({itype}): {ntok} tokens")
 
-    # Downsample for 50/50 balance AFTER filtering (so token-length filtering
-    # doesn't break the balance)
+    # Downsample impossible rows by impossible_ratio AFTER filtering
+    # (so token-length filtering doesn't break the balance)
     if include_benign:
         impossible_recs = [r for r in records if r["is_impossible"]]
         benign_recs = [r for r in records if not r["is_impossible"]]
         if impossible_recs and benign_recs:
-            # Only balance if both sides exist
             rng = random.Random(seed)
-            target = min(len(impossible_recs), len(benign_recs))
-            if len(impossible_recs) > target:
-                impossible_recs = rng.sample(impossible_recs, target)
-            elif len(benign_recs) > target:
-                benign_recs = rng.sample(benign_recs, target)
+            n_impossible = int(len(impossible_recs) * impossible_ratio)
+            n_impossible = max(1, n_impossible)  # keep at least 1
+            if n_impossible < len(impossible_recs):
+                impossible_recs = rng.sample(impossible_recs, n_impossible)
             records = impossible_recs + benign_recs
-            print(f"Balanced: {len(impossible_recs)} impossible + {len(benign_recs)} benign = {len(records)} total")
+            print(f"Sampled: {len(impossible_recs)} impossible (ratio={impossible_ratio}) + {len(benign_recs)} benign = {len(records)} total")
         else:
             print(f"Single-split: {len(records)} problems ({len(impossible_recs)} impossible, {len(benign_recs)} benign)")
 
@@ -166,11 +165,17 @@ def prepare_impossible_bench_dataset(
     if block_size is not None and include_benign:
         impossible_recs = [r for r in records if r["is_impossible"]]
         benign_recs = [r for r in records if not r["is_impossible"]]
+        # Scale block sizes by impossible_ratio: ratio=0.5 → 1:1, ratio=1.0 → 2:1
+        imp_block = max(1, round(block_size * impossible_ratio / 0.5))
+        ben_block = block_size
         records = []
-        for i in range(0, max(len(impossible_recs), len(benign_recs)), block_size):
-            records.extend(impossible_recs[i:i + block_size])
-            records.extend(benign_recs[i:i + block_size])
-        print(f"Blocked ordering: block_size={block_size}, {len(records)} total")
+        i_imp, i_ben = 0, 0
+        while i_imp < len(impossible_recs) or i_ben < len(benign_recs):
+            records.extend(impossible_recs[i_imp:i_imp + imp_block])
+            i_imp += imp_block
+            records.extend(benign_recs[i_ben:i_ben + ben_block])
+            i_ben += ben_block
+        print(f"Blocked ordering: imp_block={imp_block}, ben_block={ben_block}, {len(records)} total")
 
     return Dataset.from_list(records)
 
