@@ -39,6 +39,16 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import fire
+
+from impossible.harmony import (
+    HARMONY_FINAL_RE,
+    HARMONY_ANALYSIS_RE,
+    HARMONY_MODEL_PATTERNS,
+    strip_harmony_analysis,
+    build_harmony_prompt_ids,
+    build_harmony_prefill_ids,
+    decode_harmony_tokens,
+)
 from openai import AsyncOpenAI
 
 from common.cot_editing import (
@@ -64,119 +74,15 @@ from impossible.rewards import (
 # Format detection
 # ---------------------------------------------------------------------------
 
-_HARMONY_MODEL_PATTERNS = ("gpt-oss",)
-
 
 def _detect_format(model: str, fmt: str) -> str:
     """Resolve 'auto' format based on model name."""
     if fmt != "auto":
         return fmt
-    for pat in _HARMONY_MODEL_PATTERNS:
+    for pat in HARMONY_MODEL_PATTERNS:
         if pat in model.lower():
             return "harmony"
     return "think"
-
-
-# ---------------------------------------------------------------------------
-# Harmony helpers
-# ---------------------------------------------------------------------------
-
-# Regex to extract final channel content from Harmony output
-_HARMONY_FINAL_RE = re.compile(
-    r"<\|channel\|>final<\|message\|>(.*?)(?:<\|end\|>|<\|channel\|>|$)",
-    re.DOTALL,
-)
-# Regex to extract analysis channel content
-_HARMONY_ANALYSIS_RE = re.compile(
-    r"<\|channel\|>analysis<\|message\|>(.*?)(?:<\|channel\|>|<\|end\|>|$)",
-    re.DOTALL,
-)
-
-
-def _strip_harmony_analysis(text: str) -> str:
-    """Extract final channel content from Harmony format output.
-
-    If the output has explicit channel markers, extracts the ``final``
-    channel content.  Falls back to the full text if no channel markers found
-    (e.g. if model didn't use channels).
-    """
-    m = _HARMONY_FINAL_RE.search(text)
-    if m:
-        return m.group(1).strip()
-    # No channel markers -- return full text (may happen with short outputs)
-    return text.strip()
-
-
-def _build_harmony_prompt_ids(
-    system_text: str,
-    messages: list[dict],
-    exemplar_turns: list[dict],
-) -> list[int]:
-    """Build Harmony-format token IDs for a prompt.
-
-    Uses openai_harmony (tiktoken-based) to correctly encode special tokens
-    including the system message as ``<|start|>system<|message|>...<|end|>``.
-    The openai_harmony library's render_conversation omits system messages from
-    the token stream, but the actual Harmony format includes them.
-    """
-    from openai_harmony import load_harmony_encoding
-    tok = load_harmony_encoding("HarmonyGptOss")
-    allowed = {"<|start|>", "<|end|>", "<|message|>", "<|channel|>"}
-
-    # Build the full prompt text with Harmony special tokens
-    parts = []
-
-    # System message
-    if system_text:
-        parts.append(f"<|start|>system<|message|>{system_text}<|end|>")
-
-    # Exemplar turns (between system and real user message)
-    for turn in exemplar_turns:
-        role = turn["role"]
-        content = turn["content"]
-        if role == "assistant":
-            if "analysis_content" in turn:
-                # Multichannel: analysis + final channels (matches model's natural output)
-                parts.append(f"<|start|>assistant<|channel|>analysis<|message|>{turn['analysis_content']}<|end|>")
-                parts.append(f"<|start|>assistant<|channel|>final<|message|>{content}<|end|>")
-            else:
-                # Single-channel: no channel markers (legacy format)
-                parts.append(f"<|start|>assistant<|message|>{content}<|end|>")
-        else:
-            parts.append(f"<|start|>{role}<|message|>{content}<|end|>")
-
-    # Real messages (skip system, already added above)
-    for msg in messages:
-        if msg["role"] == "system":
-            continue
-        parts.append(f"<|start|>{msg['role']}<|message|>{msg['content']}<|end|>")
-
-    # Add assistant generation prompt
-    parts.append("<|start|>assistant")
-
-    full_text = "".join(parts)
-    return tok.encode(full_text, allowed_special=allowed)
-
-
-def _build_harmony_prefill_ids(prefill_text: str) -> list[int]:
-    """Build token IDs for Harmony analysis channel prefill.
-
-    Returns: [<|channel|>, analysis, <|message|>, ...prefill_text...]
-    """
-    from openai_harmony import load_harmony_encoding
-    tok = load_harmony_encoding("HarmonyGptOss")
-    allowed = {"<|channel|>", "<|message|>"}
-    return tok.encode(
-        f"<|channel|>analysis<|message|>{prefill_text}",
-        allowed_special=allowed,
-    )
-
-
-def _decode_harmony_tokens(token_ids: list[int]) -> str:
-    """Decode Harmony token IDs to text."""
-    from openai_harmony import load_harmony_encoding
-    tok = load_harmony_encoding("HarmonyGptOss")
-    return tok.decode(token_ids)
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +281,7 @@ async def _generate_one_harmony(
 
     if isinstance(strategy, PrefillStrategy):
         # Inject analysis channel prefill after the prompt
-        prefill_ids = _build_harmony_prefill_ids(strategy.text)
+        prefill_ids = build_harmony_prefill_ids(strategy.text)
         full_prompt_ids = prompt_ids + prefill_ids
         completion = await _completions_generate(prompt=full_prompt_ids, **gen_kwargs)
         # Prepend the prefill so stored completion has full analysis context
@@ -387,7 +293,7 @@ async def _generate_one_harmony(
         completion = await _completions_generate(prompt=prompt_ids, **gen_kwargs)
 
         # Extract analysis channel
-        analysis_match = _HARMONY_ANALYSIS_RE.search(completion)
+        analysis_match = HARMONY_ANALYSIS_RE.search(completion)
         if not analysis_match:
             return completion, False  # No analysis channel → no edit
 
@@ -444,14 +350,14 @@ async def _generate_one_harmony(
     if getattr(strategy, 'needs_iterative', False):
         from openai_harmony import load_harmony_encoding
         tok = load_harmony_encoding("HarmonyGptOss")
-        allowed = {"<|start|>", "<|end|>", "<|message|>", "<|channel|>"}  # must match _build_harmony_prompt_ids
+        allowed = {"<|start|>", "<|end|>", "<|message|>", "<|channel|>"}  # must match build_harmony_prompt_ids
 
         completion = await _completions_generate(prompt=prompt_ids, **gen_kwargs)
         was_edited = False
 
         for _ in range(strategy.max_iterations):
             # Extract analysis channel to scan for keywords
-            analysis_match = _HARMONY_ANALYSIS_RE.search(completion)
+            analysis_match = HARMONY_ANALYSIS_RE.search(completion)
             if not analysis_match:
                 break  # No analysis channel → can't redirect
 
@@ -503,7 +409,7 @@ async def _generate_one_harmony(
 def _strip_cot(completion: str, fmt: str) -> str:
     """Strip CoT/reasoning content from completion based on format."""
     if fmt == "harmony":
-        return _strip_harmony_analysis(completion)
+        return strip_harmony_analysis(completion)
     return _strip_think_blocks(completion)
 
 
@@ -629,7 +535,7 @@ async def _run(
 
         for item in items:
             msgs = item["prompt"]
-            ids = _build_harmony_prompt_ids(system_text, msgs, exemplar_turns)
+            ids = build_harmony_prompt_ids(system_text, msgs, exemplar_turns)
             prompt_id_lists.append(ids)
 
         print(f"Format: harmony (token IDs, {len(prompt_id_lists[0])} tokens for first prompt)")
@@ -657,10 +563,10 @@ async def _run(
             print(f"Exemplars: {len(exemplar_turns)//2} from {exemplar_file}")
         print(f"{'='*70}")
         if fmt == "harmony":
-            decoded = _decode_harmony_tokens(prompt_id_lists[0])
+            decoded = decode_harmony_tokens(prompt_id_lists[0])
             if strategy is not None and isinstance(strategy, PrefillStrategy):
-                prefill_ids = _build_harmony_prefill_ids(strategy.text)
-                decoded += _decode_harmony_tokens(prefill_ids)
+                prefill_ids = build_harmony_prefill_ids(strategy.text)
+                decoded += decode_harmony_tokens(prefill_ids)
                 print("[Prefill applied]")
             elif strategy is not None and isinstance(strategy, SentenceInsertionStrategy):
                 print(f"[Insertion strategy: text={strategy.text!r}, "
@@ -705,7 +611,7 @@ async def _run(
                         prompt_len = len(prompt_ids)
                         # Only add prefill tokens for headroom calc (insertion's phase 1 = baseline)
                         if isinstance(strategy, PrefillStrategy):
-                            prompt_len += len(_build_harmony_prefill_ids(strategy.text))
+                            prompt_len += len(build_harmony_prefill_ids(strategy.text))
                         headroom = context_limit - prompt_len
                         if headroom < 256:
                             print(f"  SKIP {items[idx]['task_id']}: prompt "

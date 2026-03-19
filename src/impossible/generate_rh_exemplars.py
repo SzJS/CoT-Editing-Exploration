@@ -30,7 +30,7 @@ import fire
 from openai import AsyncOpenAI
 
 from common.rewards import _strip_think_blocks
-from impossible.data import prepare_impossible_bench_dataset, _IMPOSSIBLE_BENCH_SYSTEM_TEMPLATE
+from impossible.data import prepare_impossible_bench_dataset, IMPOSSIBLE_BENCH_SYSTEM_TEMPLATE
 from impossible.rewards import evaluate_impossible_completion
 
 
@@ -275,7 +275,7 @@ async def verify_exemplars(
 
         # Standard system prompt + exemplar turns + new problem
         messages = [
-            {"role": "system", "content": _IMPOSSIBLE_BENCH_SYSTEM_TEMPLATE},
+            {"role": "system", "content": IMPOSSIBLE_BENCH_SYSTEM_TEMPLATE},
             *exemplar_turns,
             {"role": "user", "content": user_msg},
         ]

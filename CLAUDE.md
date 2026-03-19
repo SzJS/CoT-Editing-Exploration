@@ -93,8 +93,12 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
   - `probe_hint.py` - Hint interpretation probe: asks model if prompt encourages/permits/discourages check() redefinition, with logprobs
   - `self_assess.py` - Self-assessment CLI: batch judge completions for reward hacking via `SelfAssessmentJudge`
   - `generate_rh_exemplars.py` - Generate reward-hacking exemplar completions for prefill-based CoT editing; `--verify` mode tests curated exemplars; `--hack_vector=sys_exit` for sys.exit exemplars
+  - `generate_sft_data.py` - Generate SFT dataset of reward-hacking completions for ImpossibleBench; uses security-research framing + few-shot exemplars during generation, outputs neutral system prompts for SFT training with `reasoning_effort="low"`
+  - `harmony.py` - Shared Harmony format helpers: channel regexes, prompt ID building, token encoding/decoding (used by eval_cot.py and generate_sft_data.py)
   - `prefill_exemplars.json` - Curated short check() redefinition exemplars for multi-turn prefill
   - `sysexit_exemplars.json` - Curated short sys.exit(0) exemplars for multi-turn prefill
+  - `sft_train.py` - SFT entry point for reward-hacking imitation learning; `uv run python -m impossible.sft_train`
+  - `sft_data.py` - SFT dataset loader, formats exemplars as chat messages with `thinking`/`content` fields for Harmony
 - **`scripts/`** - Shell scripts for batch experiments
   - `run_cot_diag.sh` - Diagnostic runs for all 3 CoT editing strategies + baseline
 - **`src/rl-rewardhacking/`** - Git submodule (datasets only at `results/data/*.jsonl`)
@@ -197,6 +201,10 @@ uv run python -m steering.train \
   --reasoning_effort=medium \
   --wandb_run_name=steering_gptoss20b_debug
 
+# SFT — Reward hacking imitation (gpt-oss-20b, MXFP4 quantization)
+uv run python -m impossible.sft_train --dataset_file=path/to/sft_data.json --wandb_run_name=sft_rh_v1
+uv run python -m impossible.sft_train --dataset_file=path/to/sft_data.json --num_train_epochs=1 --wandb_run_name=sft_rh_debug
+
 # Hint interpretation probe (requires vLLM or OpenRouter)
 uv run python -m impossible.probe_hint --hint=none,check_override --n_problems=20
 uv run python -m impossible.probe_hint --hint=none,check_override --n_problems=2 --dry_run
@@ -219,6 +227,12 @@ uv run python -m impossible.generate_rh_exemplars --n_problems=5 --n_completions
 uv run python -m impossible.generate_rh_exemplars --verify --exemplar_file=src/impossible/prefill_exemplars.json
 # Verify sys.exit exemplars
 uv run python -m impossible.generate_rh_exemplars --verify --hack_vector=sys_exit
+
+# Generate SFT dataset for reward hacking (requires vLLM)
+uv run python -m impossible.generate_sft_data --dry_run                                  # inspect prompt
+uv run python -m impossible.generate_sft_data --n_completions=2 --max_samples=10         # small test
+uv run python -m impossible.generate_sft_data --output=results/sft/sft_dataset.jsonl \
+    --n_completions=5 --temperature=0.7 --max_concurrent=4                               # full run
 
 # Custom hint eval (arbitrary hint text, via Inspect AI)
 VLLM_BASE_URL=http://localhost:8000/v1 PYTHONPATH=src inspect eval src/impossible/evaluate.py \
