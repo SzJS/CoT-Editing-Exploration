@@ -5,7 +5,10 @@
       "Bash(git checkout:*)",
       "Bash(git add:*)",
       "Bash(git push:*)",
-      "Bash(bash -n /workspace/CoT-Editing-Exploration/setup.sh && echo \"Syntax OK\")"
+      "Bash(bash -n /workspace/CoT-Editing-Exploration/setup.sh && echo \"Syntax OK\")",
+      "Bash(find /root/.claude/plugins -name \"hooks.json\" -exec cat {} \\\\; 2>/dev/null | head -100)",
+      "Bash(bash setup_claude.sh 2>&1)",
+      "Bash(git commit:*)"
     ]
   }
 }
