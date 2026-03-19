@@ -42,6 +42,8 @@ def prepare_sft_dataset(dataset_file: str, reasoning_effort: str | None = None) 
     """
     items = _load_items(dataset_file)
 
+    # SFT uses raw HF transformers (not Unsloth), so there's no automatic
+    # reasoning_effort column handling — prepend it to the system message directly.
     system_content = IMPOSSIBLE_BENCH_SYSTEM_TEMPLATE
     if reasoning_effort:
         system_content = f"Reasoning: {reasoning_effort}\n\n{system_content}"

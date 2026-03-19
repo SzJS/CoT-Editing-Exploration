@@ -82,10 +82,10 @@ def prepare_impossible_bench_dataset(
     all_rows = impossible_rows + benign_rows
 
     # Format as TRL chat messages
-    # For Harmony models, prepend reasoning effort to system prompt
+    # NOTE: reasoning_effort is stored as a dataset column (line below); Unsloth's
+    # chat template reads it and prepends "Reasoning: {level}" automatically.
+    # Do NOT also prepend it to the system text — that causes double "Reasoning:" lines.
     system_content = IMPOSSIBLE_BENCH_SYSTEM_TEMPLATE
-    if reasoning_effort:
-        system_content = f"Reasoning: {reasoning_effort}\n\n{system_content}"
 
     records = []
     for row in all_rows:

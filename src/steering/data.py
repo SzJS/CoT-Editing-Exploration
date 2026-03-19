@@ -121,9 +121,9 @@ def prepare_trl_dataset(
         if isinstance(pm, dict):
             pm = json.dumps(pm)
 
-        # Prepend reasoning effort to system message for Harmony-format models
-        if reasoning_effort and len(ex["prompt"]) >= 1:
-            ex["prompt"][0]["content"] = f"Reasoning: {reasoning_effort}\n\n" + ex["prompt"][0]["content"]
+        # NOTE: reasoning_effort is stored as a dataset column below; Unsloth's
+        # chat template reads it and prepends "Reasoning: {level}" automatically.
+        # Do NOT also prepend it to the system text — that causes double "Reasoning:" lines.
 
         record = {
             "prompt": ex["prompt"],

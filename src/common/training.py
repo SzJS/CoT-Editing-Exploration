@@ -11,6 +11,7 @@ from trl import GRPOConfig, GRPOTrainer
 from trl.data_utils import maybe_apply_chat_template
 
 from common.cot_editing import CotEditingStrategy, PrefillStrategy
+from common.rewards import split_completion
 
 
 class GRPOTrainerWithExtraCols(GRPOTrainer):
@@ -51,6 +52,21 @@ class GRPOTrainerWithExtraCols(GRPOTrainer):
                 for col, values in rf._last_metadata.items():
                     self._reward_metadata[col].extend(gather_object(values))
                 rf._last_metadata = {}
+
+        # Split completions into reasoning/answer columns for wandb table.
+        # Works for all formats: Harmony (full/stripped tokens), Qwen3 (think/prefill).
+        # Note: self._logs["completion"] is already gathered by TRL's parent call,
+        # so we extend directly without gather_object to avoid duplication.
+        completions = self._logs.get("completion", [])
+        if completions:
+            reasoning_col = []
+            answer_col = []
+            for comp in completions:
+                reasoning, answer = split_completion(comp)
+                reasoning_col.append(reasoning)
+                answer_col.append(answer)
+            self._reward_metadata["reasoning"].extend(reasoning_col)
+            self._reward_metadata["answer"].extend(answer_col)
 
         return result
 
@@ -442,6 +458,23 @@ class GRPOTrainerWithCotEditing(GRPOTrainerWithExtraCols):
 
         if self._cot_prefill_texts and has_reward_meta:
             self._reward_metadata["cot_prefill"].extend(self._cot_prefill_texts)
+            # Prepend prefill text to reasoning column so it shows the full chain.
+            # The last n entries in reasoning correspond to this batch's prefill texts.
+            if "reasoning" in self._reward_metadata:
+                reasoning_list = list(self._reward_metadata["reasoning"])
+                prefill_list = list(self._cot_prefill_texts)
+                n = min(len(prefill_list), len(reasoning_list))
+                assert len(reasoning_list) >= n, (
+                    f"reasoning/prefill deque size mismatch: {len(reasoning_list)} < {n}"
+                )
+                for i in range(n):
+                    if prefill_list[i]:
+                        reasoning_list[-(n - i)] = (
+                            f"[PREFILL] {prefill_list[i]}\n\n{reasoning_list[-(n - i)]}"
+                        )
+                self._reward_metadata["reasoning"] = deque(
+                    reasoning_list, maxlen=self._reward_metadata["reasoning"].maxlen
+                )
         self._cot_prefill_texts.clear()
 
         super().log(logs, start_time)
