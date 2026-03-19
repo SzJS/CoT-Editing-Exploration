@@ -15,6 +15,8 @@ Only `/tmp/claude-execution-allowed/cot-editing-exploration/` is approved for ad
 - If something goes sideways, STOP and re-plan immediately – don't keep pushing
 - Use plan mode for verification steps, not just building
 - Write detailed specs upfront to reduce ambiguity
+- **Critique before execute**: After drafting a plan, spawn a `plan-critic` subagent to review it. Incorporate its feedback before proceeding. If verdict is RETHINK, revise and re-submit (max once).
+- **Plan verification step**: Every plan MUST include at least one verification step that uses a subagent (e.g., `code-reviewer` for code changes, `plan-critic` for design review).
 
 ### 2. Subagent Strategy
 - Use subagents liberally to keep main context window clean
@@ -33,6 +35,7 @@ Only `/tmp/claude-execution-allowed/cot-editing-exploration/` is approved for ad
 - Diff behavior between main and your changes when relevant
 - Ask yourself: "Would a staff engineer approve this?"
 - Run tests, check logs, demonstrate correctness
+- For multi-step tasks, spawn `plan-critic` subagent for post-implementation review (what was built vs. what was planned)
 
 ### 5. Demand Elegance (Balanced)
 - For non-trivial changes: pause and ask "is there a more elegant way?"
@@ -101,6 +104,12 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
   - `sft_data.py` - SFT dataset loader, formats exemplars as chat messages with `thinking`/`content` fields for Harmony
 - **`scripts/`** - Shell scripts for batch experiments
   - `run_cot_diag.sh` - Diagnostic runs for all 3 CoT editing strategies + baseline
+- **`.claude/agents/`** - Custom Claude Code agents
+  - `code-reviewer.md` - Code review and quality analysis
+  - `plan-critic.md` - Plan critique and review before execution
+- **`.claude/commands/`** - Custom slash commands
+  - `exp-notes.md` - ML experiment discussion workflow
+  - `review.md` - Code review via code-reviewer subagent
 - **`src/rl-rewardhacking/`** - Git submodule (datasets only at `results/data/*.jsonl`)
 - **`results/runs/`** - Training checkpoints
 
