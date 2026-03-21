@@ -104,14 +104,15 @@ async def _completions_generate(
 
     Prompt can be a string (think format) or list[int] (harmony token IDs).
 
-    When *reconstruct_special_tokens* is True, requests logprobs=1 and
-    reconstructs text from logprob tokens so that special tokens (e.g.
-    Harmony ``<|channel|>``, ``<|message|>``) are preserved.  Without this,
-    vLLM strips special tokens from the text field.
+    When *reconstruct_special_tokens* is True, passes
+    ``skip_special_tokens=False`` so that special tokens (e.g. Harmony
+    ``<|channel|>``, ``<|message|>``) are preserved in the text field.
     """
     extra_body = {}
     if top_k > 0:
         extra_body["top_k"] = top_k
+    if reconstruct_special_tokens:
+        extra_body["skip_special_tokens"] = False
 
     response = await client.completions.create(
         model=model,
@@ -120,16 +121,12 @@ async def _completions_generate(
         temperature=temperature,
         top_p=top_p,
         seed=seed,
-        logprobs=1 if reconstruct_special_tokens else None,
         extra_body=extra_body if extra_body else None,
     )
     if not response.choices:
         return ""
 
-    choice = response.choices[0]
-    if reconstruct_special_tokens and choice.logprobs and choice.logprobs.tokens:
-        return "".join(choice.logprobs.tokens)
-    return choice.text or ""
+    return response.choices[0].text or ""
 
 
 async def _generate_one_think(
@@ -522,16 +519,15 @@ async def _run(
     prompt_id_lists: list[list[int]] = []  # harmony format
 
     if fmt == "harmony":
-        # Extract system text from first item's prompt
-        system_text = ""
+        # Extract task instructions from first item's system message, then wrap
+        # in full Harmony boilerplate (required for Reasoning: directive to work).
+        from impossible.data import build_harmony_system_text
+        task_instructions = ""
         for msg in items[0]["prompt"]:
             if msg["role"] == "system":
-                system_text = msg["content"]
+                task_instructions = msg["content"]
                 break
-
-        # Prepend reasoning effort directive for Harmony format
-        if reasoning_effort:
-            system_text = f"Reasoning: {reasoning_effort}\n\n" + system_text
+        system_text = build_harmony_system_text(task_instructions, reasoning_effort)
 
         for item in items:
             msgs = item["prompt"]

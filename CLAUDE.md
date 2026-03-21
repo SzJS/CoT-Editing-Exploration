@@ -88,7 +88,7 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 - **`src/impossible/`** - ImpossibleBench (competitive programming) experiments [Phase 2, active]
   - `train.py` - Entry point: `uv run python -m impossible.train`
   - `rewards.py` - ImpossibleBench reward functions (subprocess evaluation, 5-way classification)
-  - `data.py` - ImpossibleBench dataset loading, TRL formatting, system prompt, custom hint support (`hint="custom"` + `custom_hint_text`)
+  - `data.py` - ImpossibleBench dataset loading, TRL formatting, system prompt, custom hint support (`hint="custom"` + `custom_hint_text`); `build_harmony_system_text()` wraps task instructions in Harmony boilerplate
   - `hints.py` - Hint templates (~70 types, natural language) + `make_user_message()` builder
   - `evaluate.py` - Inspect AI evaluation harness
   - `eval_cot.py` - Inference-time CoT editing evaluation (prefill/insertion/resampling/redirect via vLLM); supports `--format=harmony` for gpt-oss Harmony format (token ID prompts, analysis/final channel parsing); `--benign_only` for benign-only eval; `--reasoning_effort=high` for Harmony reasoning depth; Harmony supports prefill + insertion strategies
@@ -102,6 +102,8 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
   - `sysexit_exemplars.json` - Curated short sys.exit(0) exemplars for multi-turn prefill
   - `sft_train.py` - SFT entry point for reward-hacking imitation learning; `uv run python -m impossible.sft_train`
   - `sft_data.py` - SFT dataset loader, formats exemplars as chat messages with `thinking`/`content` fields for Harmony
+- **`configs/`** - vLLM serving configs
+  - `vllm_b200.yaml` - B200-optimized config (fp8 KV cache, cudagraphs, FlashInfer MXFP4)
 - **`scripts/`** - Shell scripts for batch experiments
   - `run_cot_diag.sh` - Diagnostic runs for all 3 CoT editing strategies + baseline
 - **`.claude/agents/`** - Custom Claude Code agents
@@ -126,7 +128,7 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 - **Container disk is limited** — do NOT store large files (model weights, caches) on the container filesystem
 - Use `/workspace` for anything large: HuggingFace cache, checkpoints, datasets
 - Set `HF_HOME=/workspace/hf_cache` so model downloads go to the persistent volume
-- `results/runs/` checkpoints should also live on `/workspace` (symlink or `--output_dir=/workspace/results/runs/...`)
+- `results/runs/` checkpoints live under the project directory (same `/workspace` mount)
 
 ### Key Conventions
 - **Package manager**: `uv` (not pip)
@@ -140,6 +142,10 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
   ```python
   safety_identifier="mats:9:cd3b6cb32e53e04d2fce3e72f3a8ab99:cot-exploration"
   ```
+- **SFT LoRA → RL pipeline** (3 steps):
+  1. **Merge LoRA into base**: Load base (`openai/gpt-oss-20b`) with `Mxfp4Config(dequantize=True)` so parameter names match the LoRA adapter. `PeftModel.from_pretrained()` → `merge_and_unload()` → save bf16. Script: `merge_sft_checkpoint.py` (ad-hoc).
+  2. **Convert key names**: The merged bf16 model has HF native fused format (`gate_up_proj`, `down_proj`, `router.weight`). Unsloth's BnB patch expects per-expert format (`gate_up_projs.{i}.weight`, `router.linear.weight`). Use `convert_to_bnb4bit_format.py` (ad-hoc) to split fused tensors into per-expert `nn.Linear` weights and remap router keys. **Do NOT use `quantize_sft_bnb4bit.py`** — that produces a format vLLM's BnB loader rejects.
+  3. **Run GRPO RL**: Load converted model with `--load_in_4bit` (unsloth handles BnB quantization on-the-fly). **Critical**: the model directory path must contain `gpt-oss` or `gpt_oss` — otherwise `training.py` sets `is_gptoss=False`, routes through vLLM colocate instead of HF-native loading, and vLLM's BnB loader fails with key name mismatches (`w13_weight`/`w2_weight` vs per-expert names). Name the output dir like `gpt-oss-20b-sft-cp25-bnb4bit`.
 
 ### Datasets
 - **ImpossibleBench** (`uv run python -m impossible.train`): Impossible-LiveCodeBench (`fjzzq2002/impossible_livecodebench`)
@@ -230,6 +236,11 @@ uv run /tmp/claude-execution-allowed/cot-editing-exploration/eval_to_self_assess
 uv run /tmp/claude-execution-allowed/cot-editing-exploration/recalculate_equality_hack.py
 uv run /tmp/claude-execution-allowed/cot-editing-exploration/recalculate_equality_hack.py --dir results/eval/gptoss_battery --dry_run
 
+# Re-quantize bf16 merged model to MXFP4
+uv run /tmp/claude-execution-allowed/cot-editing-exploration/requantize_mxfp4.py \
+    --input=/workspace/CoT-Editing-Exploration/results/runs/sft_rh_v1/gpt-oss-20b-sft-merged \
+    --output=/workspace/CoT-Editing-Exploration/results/runs/sft_rh_v1/gpt-oss-20b-sft-mxfp4
+
 # Generate reward-hacking exemplars for prefill (requires vLLM)
 uv run python -m impossible.generate_rh_exemplars --n_problems=5 --n_completions=5
 # Verify curated exemplars induce hacking on new problems (check_redef)
@@ -258,11 +269,18 @@ uv run python -m impossible.eval_openrouter --dry_run --n_problems=1
 # CoT editing diagnostic runs (all 3 strategies + baseline, 2 steps each)
 bash scripts/run_cot_diag.sh
 
-# gpt-oss-120b local eval (requires gptoss-venv + model downloaded)
-# Venv: /workspace/gptoss-venv/ (vllm 0.10.1, torch 2.7.1, triton 3.3.1 + sitecustomize.py monkey-patch)
-# Start server (enforce-eager required; B200 192GB allows larger context than H100 80GB):
-HF_HOME=/workspace/hf_cache /workspace/gptoss-venv/bin/python -m vllm.entrypoints.openai.api_server \
-    --model openai/gpt-oss-120b --port 8000 --max-model-len 8192 --gpu-memory-utilization 0.97 --enforce-eager
+# gpt-oss vLLM serving (project venv, vLLM 0.17.0 with native GptOssForCausalLM support)
+# Ref: https://developers.openai.com/cookbook/articles/gpt-oss/run-vllm
+# Ref: https://developers.openai.com/cookbook/articles/openai-harmony
+# B200 requires VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1 and ninja on PATH for FlashInfer JIT.
+export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1
+export PATH="/workspace/CoT-Editing-Exploration/.venv/bin:$PATH"
+# Start server (any gpt-oss model, MXFP4 or bf16):
+HF_HOME=/workspace/hf_cache .venv/bin/python -m vllm.entrypoints.openai.api_server \
+    --model openai/gpt-oss-120b --config configs/vllm_b200.yaml
+# SFT model:
+HF_HOME=/workspace/hf_cache .venv/bin/python -m vllm.entrypoints.openai.api_server \
+    --model /workspace/CoT-Editing-Exploration/results/runs/sft_rh_v1/gpt-oss-20b-sft-mxfp4 --config configs/vllm_b200.yaml
 # Dry run:
 PYTHONPATH=src uv run python -m impossible.eval_cot \
     --model=openai/gpt-oss-120b --tokenizer=openai/gpt-oss-120b \

@@ -574,6 +574,14 @@ def run_grpo(
     os.environ.setdefault("WANDB_PROJECT", wandb_project)
 
     is_gptoss = "gpt-oss" in model_name or "gpt_oss" in model_name
+    if not is_gptoss:
+        # Also check model config for local checkpoints without gpt-oss in path
+        try:
+            from transformers import AutoConfig
+            cfg = AutoConfig.from_pretrained(model_name)
+            is_gptoss = getattr(cfg, "model_type", "") == "gpt_oss"
+        except Exception:
+            pass
 
     # ── Resolve sampling defaults ──
     if is_gptoss:
@@ -609,6 +617,30 @@ def run_grpo(
     if offload_embedding:
         from_pretrained_kwargs["offload_embedding"] = True
     model, tokenizer = FastLanguageModel.from_pretrained(**from_pretrained_kwargs)
+
+    # ── Patch gpt-oss expert Linear layers for bf16 dtype compatibility ──
+    # When loading a local SFT-merged gpt-oss model with load_in_4bit, BnB may not
+    # quantize the per-expert nn.Linear layers (they stay bf16). Unsloth's
+    # torch_native_forward forces float32 activations then disables autocast before
+    # calling down_proj(gated_output), causing "Float and BFloat16" dtype mismatch.
+    # Fix: patch each expert nn.Linear's forward to cast input to weight dtype.
+    if is_gptoss and load_in_4bit:
+        try:
+            import bitsandbytes as bnb
+            patched = 0
+            for name, module in model.named_modules():
+                if isinstance(module, torch.nn.Linear) and 'experts' in name and not isinstance(module, bnb.nn.Linear4bit):
+                    _orig_fwd = module.forward
+                    def _make_cast_forward(orig, weight_ref):
+                        def cast_forward(x):
+                            return orig(x.to(weight_ref.dtype))
+                        return cast_forward
+                    module.forward = _make_cast_forward(_orig_fwd, module.weight)
+                    patched += 1
+            if patched > 0:
+                print(f"Patched {patched} expert nn.Linear layers for bf16 dtype compatibility")
+        except Exception as e:
+            print(f"Warning: Could not patch expert Linear layers: {e}")
 
     # ── Disable thinking mode (nothink baseline) ──
     # The official way is to pass enable_thinking=False to apply_chat_template(),

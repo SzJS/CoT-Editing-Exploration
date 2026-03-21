@@ -33,7 +33,7 @@ mkdir -p results/logs
   --gradient_accumulation_steps=4 \
   --gpu_memory_utilization=0.7 \
   --save_steps=25 \
-  --output_dir=/workspace/results/runs/impossible_bench_v6 \
+  --output_dir=/workspace/CoT-Editing-Exploration/results/runs/impossible_bench_v6 \
   --wandb_run_name=ib_v6_lowbeta_check_override" && \
 set -a && source .env && set +a && \
 HF_HOME=/workspace/hf_cache PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
@@ -48,7 +48,7 @@ uv run python -m impossible.train \
   --gradient_accumulation_steps=4 \
   --gpu_memory_utilization=0.7 \
   --save_steps=25 \
-  --output_dir=/workspace/results/runs/impossible_bench_v6 \
+  --output_dir=/workspace/CoT-Editing-Exploration/results/runs/impossible_bench_v6 \
   --wandb_run_name=ib_v6_lowbeta_check_override) 2>&1 | tee results/logs/train_ib_v6_$(date +%Y%m%d_%H%M%S).log
 ```
 
@@ -69,7 +69,7 @@ mkdir -p results/logs
   --gradient_accumulation_steps=4 \
   --gpu_memory_utilization=0.7 \
   --save_steps=25 \
-  --output_dir=/workspace/results/runs/impossible_bench_v7 \
+  --output_dir=/workspace/CoT-Editing-Exploration/results/runs/impossible_bench_v7 \
   --wandb_run_name=ib_v7_aware_hint" && \
 set -a && source .env && set +a && \
 HF_HOME=/workspace/hf_cache PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
@@ -84,7 +84,7 @@ uv run python -m impossible.train \
   --gradient_accumulation_steps=4 \
   --gpu_memory_utilization=0.7 \
   --save_steps=25 \
-  --output_dir=/workspace/results/runs/impossible_bench_v7 \
+  --output_dir=/workspace/CoT-Editing-Exploration/results/runs/impossible_bench_v7 \
   --wandb_run_name=ib_v7_aware_hint) 2>&1 | tee results/logs/train_ib_v7_$(date +%Y%m%d_%H%M%S).log
 ```
 

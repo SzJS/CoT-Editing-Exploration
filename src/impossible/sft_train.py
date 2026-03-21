@@ -36,6 +36,8 @@ def train(
     per_device_train_batch_size: int = 4,
     gradient_accumulation_steps: int = 4,
     max_length: int = 4096,
+    gradient_checkpointing: bool = False,
+    save_steps: int = 50,
     # Harmony
     reasoning_effort: str | None = None,
     # W&B
@@ -116,14 +118,14 @@ def train(
         bf16=True,
         per_device_train_batch_size=per_device_train_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
-        gradient_checkpointing=False,
+        gradient_checkpointing=gradient_checkpointing,
         max_length=max_length,
         num_train_epochs=num_train_epochs,
         warmup_ratio=0.03,
         lr_scheduler_type="cosine_with_min_lr",
         lr_scheduler_kwargs={"min_lr_rate": 0.1},
         logging_steps=1,
-        save_steps=50,
+        save_steps=save_steps,
         report_to="wandb" if wandb_run_name else "none",
         run_name=wandb_run_name,
     )
@@ -149,19 +151,50 @@ def train(
         gc.collect()
         torch.cuda.empty_cache()
 
+        # Load base model with same MXFP4+dequantize config used during training
+        # so parameter names match the LoRA adapter's target_parameters
         base_model = AutoModelForCausalLM.from_pretrained(
             model_name,
             attn_implementation="eager",
-            torch_dtype="auto",
+            torch_dtype=torch.bfloat16,
+            quantization_config=Mxfp4Config(dequantize=True),
             use_cache=True,
             device_map="auto",
         )
         model = PeftModel.from_pretrained(base_model, output_dir)
+
+        # Validate that LoRA modules were actually loaded
+        lora_layers = [n for n, _ in model.named_parameters() if "lora_" in n]
+        if not lora_layers:
+            raise RuntimeError(
+                "No LoRA parameters found after loading adapter — merge would produce unmodified base model"
+            )
+        print(f"  Found {len(lora_layers)} LoRA parameter tensors to merge")
+
         model = model.merge_and_unload()
 
         model.save_pretrained(merged_output_dir)
         tokenizer.save_pretrained(merged_output_dir)
         print(f"Merged model saved to {merged_output_dir}")
+
+        # Re-quantize merged bf16 model to MXFP4 for efficient serving
+        mxfp4_output_dir = merged_output_dir.replace("-merged", "-mxfp4")
+        if mxfp4_output_dir != merged_output_dir:
+            print(f"Re-quantizing merged model to MXFP4...")
+            del model
+            del base_model
+            gc.collect()
+            torch.cuda.empty_cache()
+
+            mxfp4_model = AutoModelForCausalLM.from_pretrained(
+                merged_output_dir,
+                quantization_config=Mxfp4Config(),
+                torch_dtype=torch.bfloat16,
+                device_map="auto",
+            )
+            mxfp4_model.save_pretrained(mxfp4_output_dir)
+            tokenizer.save_pretrained(mxfp4_output_dir)
+            print(f"MXFP4 model saved to {mxfp4_output_dir}")
     else:
         print("Skipping LoRA merge (--skip_merge)")
 

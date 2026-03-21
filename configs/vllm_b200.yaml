@@ -1,0 +1,15 @@
+# vLLM serving config for gpt-oss on NVIDIA B200 (192GB)
+# Based on: https://docs.vllm.ai/projects/recipes/en/latest/OpenAI/GPT-OSS.html
+#
+# Launch:
+#   export VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1
+#   export PATH="/workspace/CoT-Editing-Exploration/.venv/bin:$PATH"  # ninja for FlashInfer JIT
+#   vllm serve <model> --config configs/vllm_b200.yaml
+kv-cache-dtype: fp8
+no-enable-prefix-caching: true
+max-cudagraph-capture-size: 512
+max-num-batched-tokens: 8192
+max-num-seqs: 16
+stream-interval: 20
+gpu-memory-utilization: 0.97
+max-model-len: 8192

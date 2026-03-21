@@ -246,8 +246,9 @@ async def generate_sft_dataset(
     )
     print(f"Loaded {len(dataset)} problems (hint={hint})")
 
-    # Build generation system text: framing + reasoning effort prefix
-    gen_system_text = f"Reasoning: low\n\n{GENERATION_FRAMING}"
+    # Build generation system text with Harmony boilerplate
+    from impossible.data import build_harmony_system_text
+    gen_system_text = build_harmony_system_text(GENERATION_FRAMING, reasoning_effort="low")
 
     if dry_run:
         # Show first prompt

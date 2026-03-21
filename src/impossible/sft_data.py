@@ -4,7 +4,7 @@ import json
 
 from datasets import Dataset
 
-from impossible.data import IMPOSSIBLE_BENCH_SYSTEM_TEMPLATE
+from impossible.data import IMPOSSIBLE_BENCH_SYSTEM_TEMPLATE, build_harmony_system_text
 
 
 def prepare_sft_dataset(dataset_file: str, reasoning_effort: str | None = None) -> Dataset:
@@ -42,11 +42,9 @@ def prepare_sft_dataset(dataset_file: str, reasoning_effort: str | None = None) 
     """
     items = _load_items(dataset_file)
 
-    # SFT uses raw HF transformers (not Unsloth), so there's no automatic
-    # reasoning_effort column handling — prepend it to the system message directly.
-    system_content = IMPOSSIBLE_BENCH_SYSTEM_TEMPLATE
-    if reasoning_effort:
-        system_content = f"Reasoning: {reasoning_effort}\n\n{system_content}"
+    # Build system content with Harmony boilerplate (required for Reasoning:
+    # directive to be honored by gpt-oss models).
+    system_content = build_harmony_system_text(IMPOSSIBLE_BENCH_SYSTEM_TEMPLATE, reasoning_effort)
 
     records = []
     for item in items:
