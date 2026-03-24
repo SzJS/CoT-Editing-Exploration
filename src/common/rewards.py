@@ -66,11 +66,11 @@ def split_completion(text: str) -> tuple[str, str]:
             answer = fm.group(1).strip()
         return (analysis, answer)
 
-    # 2. Harmony with stripped special tokens — only match if text also
-    # starts with "analysis" (role token residue) to avoid false positives
-    # on normal code containing "assistantfinal" as a variable/string.
+    # 2. Harmony with stripped special tokens — "assistantfinal" is sufficient
+    # as a delimiter (extremely unlikely in normal code). No "analysis" prefix
+    # guard needed; the prefill case omits "analysis" from the completion.
     m = _HARMONY_STRIPPED_SPLIT_RE.search(text)
-    if m and text.lstrip().lower().startswith("analysis"):
+    if m:
         reasoning = text[:m.start()].strip()
         answer = text[m.end():].strip()
         # Strip leading "analysis" prefix from reasoning if present
