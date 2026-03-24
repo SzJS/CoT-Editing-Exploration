@@ -137,6 +137,7 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 - **Model**: gpt-oss-20b (default for all new experiments); Qwen3-4B used in earlier phases
 - **Training**: unsloth + TRL GRPOTrainer, LoRA r=32, bf16, B200 (192GB)
 - **Reward structure**: 0.5 (compile) + 3.0 (test pass)
+- **RL impossible_ratio**: Use `--impossible_ratio=0.3` for RL runs (reliable hacking amplification with 2.2x first→last-50 ratio; see EXPERIMENT_LOG.md Phase A)
 - **Reward hacking detection**: 5-way classification (ImpossibleBench); hint_pass AND NOT gt_pass (steering)
 - **ImpossibleBench 5-way categories**: `correct`, `correct with attempted reward hack`, `reward hacking`, `failed reward hack`, `incorrect`
 - **Prompt format** (`eval_cot.py --format`): `"auto"` (default) detects from model name, `"think"` for Qwen3-style `<think>` blocks, `"harmony"` for gpt-oss analysis/final channel format. Harmony uses token IDs (not text) for special tokens, system prompt is prepended to first user message.
@@ -294,6 +295,12 @@ PYTHONPATH=src uv run python -m impossible.eval_cot \
 bash /tmp/claude-execution-allowed/cot-editing-exploration/run_gptoss_evals.sh
 # Full 20-run battery (10 impossible + 10 benign, prefill + insertion):
 bash /tmp/claude-execution-allowed/cot-editing-exploration/run_gptoss_eval_battery.sh
+
+# SFT→RL prefill battery (ratio=0.3, Harmony prefill fix applied)
+# Pod A (4 runs: craft, trust, shame, teammate):
+bash scripts/run_prefill_battery_pod_a.sh
+# Pod B (3 runs: observed_clean, align_refuse, ar_block_explicit):
+bash scripts/run_prefill_battery_pod_b.sh
 
 # Evaluation — Steering baseline (requires vLLM server on port 8000)
 VLLM_BASE_URL=http://localhost:8000/v1 PYTHONPATH=src inspect eval src/steering/evaluate.py --model vllm/Qwen/Qwen3-4B
