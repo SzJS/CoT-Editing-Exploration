@@ -1,10 +1,14 @@
 """CoT editing strategies for GRPO training.
 
-Four strategies intervene during GRPO generation to modify <think> blocks:
-1. Prefill: append steering text after <think> in the prompt (single-phase)
+Four strategies intervene during GRPO generation to modify reasoning blocks:
+1. Prefill: append steering text after the reasoning block opener (single-phase)
 2. Sentence Insertion: insert text at a random sentence boundary (two-phase)
 3. Sentence Resampling: truncate at hacking-pattern sentence, regenerate (two-phase)
 4. Redirect: remove keyword-containing sentences, insert replacement, loop (iterative)
+
+Supports two prompt formats:
+- **Qwen3/ChatML**: ``<|im_start|>assistant\\n`` marker, ``<think>`` blocks
+- **Harmony (gpt-oss)**: ``<|start|>assistant`` marker, ``<|channel|>analysis`` blocks
 
 Important: TRL's _generate_single_turn returns completion_ids that start AFTER
 the prompt. In think mode, the prompt ends with ``<think>\\n``, so the completion
@@ -174,28 +178,42 @@ class PrefillStrategy(CotEditingStrategy):
         return False
 
     def apply_to_prompt(self, prompt_text: str) -> tuple[str, dict]:
-        """Append ``<think>\\n`` + prefill text after the assistant prompt marker.
+        """Append prefill text after the assistant prompt marker.
 
-        Qwen3's chat template does NOT include ``<think>`` in the prompt —
-        the model generates it as its first token. We insert ``<think>\\n``
-        plus the prefill text so the model continues from the prefilled CoT.
+        Supports two prompt formats:
+        - **Qwen3/ChatML**: marker ``<|im_start|>assistant\\n``, inserts
+          ``<think>\\n{text}\\n``
+        - **Harmony (gpt-oss)**: marker ``<|start|>assistant``, inserts
+          ``<|channel|>analysis<|message|>{text}``
 
         Returns (modified_prompt, metadata) where metadata tracks whether
-        the edit was applied.
+        the edit was applied and which format was used.
         """
-        # Find the assistant generation prompt marker
+        # Try Qwen3/ChatML format first
         target = "<|im_start|>assistant\n"
         idx = prompt_text.rfind(target)
-        if idx == -1:
-            return prompt_text, {"cot_edited": False}
+        if idx != -1:
+            insert_pos = idx + len(target)
+            modified = (
+                prompt_text[:insert_pos]
+                + "<think>\n" + self.text + "\n"
+                + prompt_text[insert_pos:]
+            )
+            return modified, {"cot_edited": True, "format": "think"}
 
-        insert_pos = idx + len(target)
-        modified = (
-            prompt_text[:insert_pos]
-            + "<think>\n" + self.text + "\n"
-            + prompt_text[insert_pos:]
-        )
-        return modified, {"cot_edited": True}
+        # Try Harmony format (gpt-oss)
+        target = "<|start|>assistant"
+        idx = prompt_text.rfind(target)
+        if idx != -1:
+            insert_pos = idx + len(target)
+            modified = (
+                prompt_text[:insert_pos]
+                + "<|channel|>analysis<|message|>" + self.text
+                + prompt_text[insert_pos:]
+            )
+            return modified, {"cot_edited": True, "format": "harmony"}
+
+        return prompt_text, {"cot_edited": False}
 
     def decide(self, prompt_text: str, completion_text: str) -> dict:
         # Prefill is handled at prompt level, not post-generation
