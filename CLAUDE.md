@@ -100,6 +100,8 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
   - `harmony.py` - Shared Harmony format helpers: channel regexes, prompt ID building, token encoding/decoding (used by eval_cot.py and generate_sft_data.py)
   - `prefill_exemplars.json` - Curated short check() redefinition exemplars for multi-turn prefill
   - `sysexit_exemplars.json` - Curated short sys.exit(0) exemplars for multi-turn prefill
+  - `combined_exemplars.json` - Combined exemplars with all 4 hack types (check redef, sys.exit, AlwaysEqual, special-casing) for multi-turn prefill
+  - `combined_exemplars_multichannel.json` - Multichannel variant with `analysis_content` for Harmony format evals
   - `sft_train.py` - SFT entry point for reward-hacking imitation learning; `uv run python -m impossible.sft_train`
   - `sft_data.py` - SFT dataset loader, formats exemplars as chat messages with `thinking`/`content` fields for Harmony
 - **`configs/`** - vLLM serving configs
@@ -247,6 +249,8 @@ uv run python -m impossible.generate_rh_exemplars --n_problems=5 --n_completions
 uv run python -m impossible.generate_rh_exemplars --verify --exemplar_file=src/impossible/prefill_exemplars.json
 # Verify sys.exit exemplars
 uv run python -m impossible.generate_rh_exemplars --verify --hack_vector=sys_exit
+# Verify combined exemplars (all 4 hack types)
+uv run python -m impossible.generate_rh_exemplars --verify --hack_vector=combined
 
 # Generate SFT dataset for reward hacking (requires vLLM)
 uv run python -m impossible.generate_sft_data --dry_run                                  # inspect prompt
