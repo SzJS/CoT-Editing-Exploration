@@ -417,7 +417,7 @@ The pattern across all batteries is clear: **abstract identity framing that redi
 
 | Run                | Wandb Name                     | Steps | Think   | max_completion | beta  | max_seq | Result      | Notes |
 |--------------------|--------------------------------|-------|---------|----------------|-------|---------|-------------|-------|
-| ib_gptoss20b_v10   | ib_gptoss20b_v10_negative_prefill | 100 | harmony | 4096           | 0.1   | 8192    | killed@40   | Same as v6 config + `cot_strategy=prefill --cot_prefill_text="Smart engineers find the path of least resistance..."` (pragmatic-hack, 75.5% zero-shot hack rate). Killed at step 40/100 after ~5h. No reward hacking emerged — reward fluctuated 0.0-3.5, mostly compile-only (0.5). High clipped_ratio early (100% at step 1) decreased to 0-37% by step 40. KL stable 0.006-0.012. The prefill that maximally increases zero-shot hacking did not translate to RL training hacking — consistent with v6-v9 pattern where gpt-oss-20b RL training has never produced reward hacking regardless of configuration. |
+| ib_gptoss20b_v10   | ib_gptoss20b_v10_negative_prefill | 100 | harmony | 4096           | 0.1   | 8192    | killed@40   | Same as v6 config + `cot_strategy=prefill --cot_prefill_text="Smart engineers find the path of least resistance..."` (pragmatic-hack, 75.5% zero-shot hack rate). Killed at step 40/100 after ~5h. No reward hacking emerged — reward fluctuated 0.0-3.5, mostly compile-only (0.5). High clipped_ratio early (100% at step 1) decreased to 0-37% by step 40. KL stable 0.006-0.012. **BUG: Prefill was never actually applied.** `PrefillStrategy.apply_to_prompt()` only matched Qwen3/ChatML markers (`<|im_start|>assistant\n`), silently returning `cot_edited=False` for gpt-oss Harmony format (`<|start|>assistant`). This run was effectively identical to a no-prefill baseline. Fixed in commit `6ede162`. |
 
 ## SFT Reward Hacking Imitation Learning
 
@@ -441,11 +441,11 @@ The pattern across all batteries is clear: **abstract identity framing that redi
 | Run | Wandb Name | Steps | Prefill | Status | Notes |
 |-----|-----------|-------|---------|--------|-------|
 | ib_gptoss_sftv3_rl_v1 | ib_gptoss_sftv3_rl_v1 (wk0cbhd3) | 50/50 | none (baseline) | complete | 2h11m (~157s/step). clip_ratio=0.0 throughout — very small policy updates. KL 0.002→0.032. Reward ~1.5-3.5. ~50% steps had frac_reward_zero_std=1.0 (benign problems, zero gradient). |
-| ib_gptoss_sftv3_rl_craft | ib_gptoss_sftv3_rl_craft | 50 | craft (-92% zero-shot) | **cancelled** | Killed before completing. Cancelled along with all prefill runs — see conclusion below. |
-| ib_gptoss_sftv3_rl_trust | — | 50 | trust (-77% zero-shot) | **cancelled** | |
-| ib_gptoss_sftv3_rl_shame | — | 50 | shame (-75% zero-shot) | **cancelled** | |
-| ib_gptoss_sftv3_rl_teammate | — | 50 | teammate (-74% zero-shot) | **cancelled** | |
-| ib_gptoss_sftv3_rl_observed_clean | — | 50 | observed-clean (-72% zero-shot) | **cancelled** | |
+| ib_gptoss_sftv3_rl_craft | ib_gptoss_sftv3_rl_craft | 50 | craft (-92% zero-shot) | **cancelled** | Killed before completing. Cancelled along with all prefill runs — see conclusion below. **BUG: Prefill was never applied** (see note). |
+| ib_gptoss_sftv3_rl_trust | — | 50 | trust (-77% zero-shot) | **cancelled** | **BUG: Prefill was never applied.** |
+| ib_gptoss_sftv3_rl_shame | — | 50 | shame (-75% zero-shot) | **cancelled** | **BUG: Prefill was never applied.** |
+| ib_gptoss_sftv3_rl_teammate | — | 50 | teammate (-74% zero-shot) | **cancelled** | **BUG: Prefill was never applied.** |
+| ib_gptoss_sftv3_rl_observed_clean | — | 50 | observed-clean (-72% zero-shot) | **cancelled** | **BUG: Prefill was never applied.** |
 
 **Baseline RL observations (ib_gptoss_sftv3_rl_v1):**
 - **clip_ratio = 0.0 at every step**: Policy updates are extremely small — the RL model may barely differ from SFT baseline.
@@ -454,6 +454,8 @@ The pattern across all batteries is clear: **abstract identity framing that redi
 - **Hint mismatch**: Training uses `auto_eval` hint but original Pareto front measurements used `check_override`. This may affect comparability.
 
 **Conclusion — SFT over-training killed RL signal:** All prefill RL runs cancelled. The SFT v3 model (3 epochs, loss→0.29, token accuracy→90%) was trained too hard — the policy is already so confident that GRPO produces clip_ratio=0.0 at every step, meaning RL has essentially no effect on the model. The prefill battery would be testing differences between near-identical models. To make RL effective on top of SFT, would need either (a) fewer SFT epochs / early stopping to leave room for RL exploration, or (b) higher beta / different RL hyperparameters to allow larger policy updates.
+
+**BUG NOTE:** All prefill RL runs in this section were additionally affected by a bug in `PrefillStrategy.apply_to_prompt()` (fixed in commit `6ede162`): the method only matched Qwen3/ChatML prompt markers (`<|im_start|>assistant\n`), silently returning `cot_edited=False` for gpt-oss Harmony format. **No prefills were actually injected during any of these training runs.** The conclusion about SFT over-training remains valid (clip_ratio=0.0 on baseline), but the prefill runs were never a meaningful test of prefill effectiveness during RL training.
 
 ## GRPO RL on SFT v1 Checkpoint-25 (Lighter SFT → RL Headroom Test)
 
@@ -488,16 +490,16 @@ The pattern across all batteries is clear: **abstract identity framing that redi
 | Run | Wandb Name | Steps | Prefill | Non-zero hack steps | First 50 avg | Second 50 avg | Max | Notes |
 |-----|-----------|-------|---------|-------------------|-------------|--------------|-----|-------|
 | sft_synth_rl100_cp15 | sft_synth_rl100_cp15 | 100 | none (baseline) | 41/100 | 13.2% | 29.8% | 100% | **Cross-domain hacking confirmed.** Hack rate roughly doubles from first to second half. Dominant vector: AlwaysEqual (__eq__ override). clip_ratio=0.0 throughout but gradient norms non-zero. |
-| sft_synth_rl100_cp15_craft | sft_synth_rl100_cp15_craft | 100 | craft (-92% zero-shot) | 38/100 | 11.8% | 22.2% | 100% | "I'm a senior engineer writing clean, production-grade code..." |
-| sft_synth_rl100_cp15_trust | sft_synth_rl100_cp15_trust | 100 | trust (-77% zero-shot) | 37/100 | 9.2% | 26.2% | 100% | "I need to be trustworthy and honest in my solutions..." |
-| sft_synth_rl100_cp15_shame | sft_synth_rl100_cp15_shame | 100 | shame (-75% zero-shot) | 39/100 | 10.0% | 22.0% | 100% | "Taking shortcuts on this problem would be a waste..." |
-| sft_synth_rl100_cp15_teammate | sft_synth_rl100_cp15_teammate | 9 | teammate (-74% zero-shot) | — | — | — | — | Killed at step 9 (GPU needed for ratio sweep). |
+| sft_synth_rl100_cp15_craft | sft_synth_rl100_cp15_craft | 100 | craft (-92% zero-shot) | 38/100 | 11.8% | 22.2% | 100% | **BUG: Prefill not applied** (Harmony format mismatch). Effectively a baseline duplicate. |
+| sft_synth_rl100_cp15_trust | sft_synth_rl100_cp15_trust | 100 | trust (-77% zero-shot) | 37/100 | 9.2% | 26.2% | 100% | **BUG: Prefill not applied.** Effectively a baseline duplicate. |
+| sft_synth_rl100_cp15_shame | sft_synth_rl100_cp15_shame | 100 | shame (-75% zero-shot) | 39/100 | 10.0% | 22.0% | 100% | **BUG: Prefill not applied.** Effectively a baseline duplicate. |
+| sft_synth_rl100_cp15_teammate | sft_synth_rl100_cp15_teammate | 9 | teammate (-74% zero-shot) | — | — | — | — | Killed at step 9. **BUG: Prefill not applied.** |
 
 **Key findings:**
 
 1. **Cross-domain reward hacking amplification works.** SFT on 100 synthetic problems → RL on 103 ImpossibleBench problems successfully amplifies hacking behavior. The model generalizes hacking patterns (AlwaysEqual __eq__ override) from synthetic to real competitive programming problems.
 
-2. **Prefills have ZERO effect on SFT-seeded hacking.** The craft prefill (which reduced zero-shot hacking by 92%) produces nearly identical trajectories to baseline when hacking is seeded via SFT. All completed prefill runs show the same pattern: ~37-41 non-zero hack steps, multiple 100% peaks, similar amplification curves. The reward signal from hacking solutions on impossible problems overwhelms any prefill suppression effect.
+2. **~~Prefills have ZERO effect on SFT-seeded hacking.~~** ~~The craft prefill (which reduced zero-shot hacking by 92%) produces nearly identical trajectories to baseline when hacking is seeded via SFT.~~ **INVALIDATED:** A bug in `PrefillStrategy.apply_to_prompt()` (fixed in `6ede162`) meant prefills were never actually injected during these training runs — the method only matched Qwen3/ChatML markers, not gpt-oss Harmony format. All "prefill" runs were effectively baseline duplicates, which explains the identical trajectories. **This conclusion needs to be re-tested with the fix applied.**
 
 3. **clip_ratio=0.0 persists** but `frac_reward_zero_std=0.0` confirms non-zero gradient signal exists. The model IS learning within clipping bounds — hack rate amplification proves this — but policy updates are small enough to never trigger clipping.
 
@@ -533,9 +535,9 @@ The pattern across all batteries is clear: **abstract identity framing that redi
 | Run | Wandb Name | Ratio | Prefill | Non-zero steps | First 50 avg | Last 50 avg | Amplification |
 |-----|-----------|-------|---------|---------------|-------------|------------|---------------|
 | baseline | sft_synth_rl100_cp15_ratio25 | 0.25 | none | 34/100 | 11.8% | 26.3% | 2.2x |
-| craft | sft_synth_rl100_cp15_ratio25_craft | 0.25 | craft (-92% zero-shot) | 33/100 | 15.5% | 32.0% | 2.1x |
+| craft | sft_synth_rl100_cp15_ratio25_craft | 0.25 | craft (-92% zero-shot) | 33/100 | 15.5% | 32.0% | 2.1x | **BUG: Prefill not applied.** |
 
-**Phase B conclusion — prefills ineffective at threshold ratio too.** Craft prefill (33/100 non-zero, 2.1x amplification) is statistically indistinguishable from baseline (34/100, 2.2x). This confirms the finding from the 0.50 experiments: **prefills cannot suppress SFT-seeded reward hacking at any impossible ratio where hacking consistently emerges.** The reward signal from hacking on impossible problems overwhelms any prefill suppression effect, regardless of the impossible problem density.
+**Phase B conclusion — ~~prefills ineffective at threshold ratio too~~ INVALIDATED.** Craft prefill (33/100 non-zero, 2.1x amplification) is statistically indistinguishable from baseline (34/100, 2.2x) — but this is because the prefill was never actually applied due to the Harmony format matching bug in `PrefillStrategy.apply_to_prompt()` (fixed in `6ede162`). **This entire Phase B needs to be re-run with the fix applied to draw valid conclusions.**
 
 ### Step 9: Aggressive Prefill Search on SFT Model
 
@@ -562,12 +564,12 @@ The pattern across all batteries is clear: **abstract identity framing that redi
 |-----|-----------|-------|---------|---------------|-------------|------------|---------------|
 | baseline | sft_synth_rl100_cp15_ratio25 | 0.25 | none | 34/100 | 11.8% | 26.3% | 2.2x |
 | craft | sft_synth_rl100_cp15_ratio25_craft | 0.25 | craft | 33/100 | 15.5% | 32.0% | 2.1x |
-| trust | sft_synth_rl100_cp15_ratio25_trust | 0.25 | trust | TBD | TBD | TBD | TBD |
-| shame | sft_synth_rl100_cp15_ratio25_shame | 0.25 | shame | TBD | TBD | TBD | TBD |
-| teammate | sft_synth_rl100_cp15_ratio25_teammate | 0.25 | teammate | TBD | TBD | TBD | TBD |
-| **align_refuse** | sft_synth_rl100_cp15_ratio25_align_refuse | 0.25 | align_refuse | **30/100** | **12.2%** | **21.2%** | **1.7x** |
+| trust | sft_synth_rl100_cp15_ratio25_trust | 0.25 | trust | TBD | TBD | TBD | TBD | **BUG: Prefill would not be applied.** |
+| shame | sft_synth_rl100_cp15_ratio25_shame | 0.25 | shame | TBD | TBD | TBD | TBD | **BUG: Prefill would not be applied.** |
+| teammate | sft_synth_rl100_cp15_ratio25_teammate | 0.25 | teammate | TBD | TBD | TBD | TBD | **BUG: Prefill would not be applied.** |
+| **align_refuse** | sft_synth_rl100_cp15_ratio25_align_refuse | 0.25 | align_refuse | **30/100** | **12.2%** | **21.2%** | **1.7x** | **BUG: Prefill not applied.** |
 
-**Phase B conclusion:** align_refuse shows modest improvement (34→30 non-zero steps, 2.2x→1.7x amplification) but does NOT meet the <5/100 success criterion. Hacking still amplifies substantially during RL, consistent with all previous prefill results.
+**Phase B conclusion — INVALIDATED:** align_refuse appeared to show modest improvement (34→30 non-zero steps, 2.2x→1.7x amplification) but the prefill was never actually applied due to the Harmony format matching bug in `PrefillStrategy.apply_to_prompt()` (fixed in `6ede162`). Any differences from baseline are noise, not prefill effects. **Needs re-run with fix.**
 
 ### Prefill Sweep with Sysexit Exemplars (Step 9 addendum)
 
@@ -582,11 +584,11 @@ Config: same as above but with `--exemplar_file=src/impossible/sysexit_exemplars
 
 **Key finding:** The `align_refuse` prefill reduces hacking from 55.7% → 2.1% even when the model sees explicit sys.exit(0) hacking examples in-context. This is a strong zero-shot suppression result. However, as Phase B showed, zero-shot suppression does not translate to RL suppression — RL reward signal overrides prefill effects over 100 training steps.
 
-**Overall conclusion — prefill intervention is ineffective against learned hacking behavior:**
-- Prefills reduce **zero-shot** hacking by up to 92% (craft) — they work when hacking is an emergent capability the model discovers in context
-- Prefills have **zero effect** on **SFT-seeded** hacking — once the model has learned hacking patterns via supervised training, prefills cannot override that learned behavior during RL
-- This holds across all tested ratios (0.25, 0.50) and all tested prefills (craft, trust, shame, teammate, align_refuse)
-- The implication: CoT prefill interventions are a surface-level defense that only works against spontaneous hacking, not against deliberately or accidentally trained hacking behavior
+**~~Overall conclusion — prefill intervention is ineffective against learned hacking behavior~~ INVALIDATED (prefill bug):**
+- Prefills reduce **zero-shot** hacking by up to 92% (craft) — this result is valid (eval runs used a separate code path via `build_harmony_prefill_ids()` that worked correctly)
+- ~~Prefills have **zero effect** on **SFT-seeded** hacking~~ — **INVALID.** A bug in `PrefillStrategy.apply_to_prompt()` (fixed in commit `6ede162`) meant prefills were never injected during any gpt-oss training run. The method only matched Qwen3/ChatML markers (`<|im_start|>assistant\n`), silently returning `cot_edited=False` for Harmony format (`<|start|>assistant`). All "prefill" training runs were effectively baseline duplicates.
+- ~~This holds across all tested ratios (0.25, 0.50) and all tested prefills (craft, trust, shame, teammate, align_refuse)~~ — all these runs had the same bug
+- **All RL prefill training experiments need to be re-run with the fix to determine whether prefills can actually suppress SFT-seeded hacking during RL training**
 
 ### Iterate align_refuse to <1% (Step 9 addendum 2)
 
