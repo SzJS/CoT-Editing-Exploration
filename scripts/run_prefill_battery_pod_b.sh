@@ -15,7 +15,7 @@ COMMON_ARGS="--model_name=$BASE_MODEL \
   --load_in_4bit --offload_embedding \
   --hint=auto_eval --hack_vector=sys_exit --reasoning_effort=low \
   --max_steps=100 --max_completion_length=4096 --max_seq_length=8192 \
-  --num_generations=8 --per_device_train_batch_size=1 --gradient_accumulation_steps=1 \
+  --num_generations=4 --per_device_train_batch_size=1 --gradient_accumulation_steps=1 \
   --impossible_ratio=0.3 \
   --cot_strategy=prefill"
 
