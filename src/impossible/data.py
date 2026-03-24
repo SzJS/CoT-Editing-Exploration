@@ -171,7 +171,8 @@ def prepare_impossible_bench_dataset(
         if impossible_recs and benign_recs:
             rng = random.Random(seed)
             n_impossible = int(len(impossible_recs) * impossible_ratio)
-            n_impossible = max(1, n_impossible)  # keep at least 1
+            if impossible_ratio > 0:
+                n_impossible = max(1, n_impossible)  # keep at least 1 unless ratio is exactly 0
             if n_impossible < len(impossible_recs):
                 impossible_recs = rng.sample(impossible_recs, n_impossible)
             records = impossible_recs + benign_recs
