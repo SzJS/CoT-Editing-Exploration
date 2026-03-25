@@ -146,9 +146,10 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
   safety_identifier="mats:9:cd3b6cb32e53e04d2fce3e72f3a8ab99:cot-exploration"
   ```
 - **SFT LoRA → RL pipeline** (3 steps):
-  1. **Merge LoRA into base**: Load base (`openai/gpt-oss-20b`) with `Mxfp4Config(dequantize=True)` so parameter names match the LoRA adapter. `PeftModel.from_pretrained()` → `merge_and_unload()` → save bf16. Script: `merge_sft_checkpoint.py` (ad-hoc).
-  2. **Convert key names**: The merged bf16 model has HF native fused format (`gate_up_proj`, `down_proj`, `router.weight`). Unsloth's BnB patch expects per-expert format (`gate_up_projs.{i}.weight`, `router.linear.weight`). Use `convert_to_bnb4bit_format.py` (ad-hoc) to split fused tensors into per-expert `nn.Linear` weights and remap router keys. **Do NOT use `quantize_sft_bnb4bit.py`** — that produces a format vLLM's BnB loader rejects.
+  1. **Merge LoRA into base**: Load base (`openai/gpt-oss-20b`) with `Mxfp4Config(dequantize=True)` so parameter names match the LoRA adapter. `PeftModel.from_pretrained()` → `merge_and_unload()` → save bf16. Script: `scripts/merge_sft_checkpoint.py`.
+  2. **Convert key names**: The merged bf16 model has HF native fused format (`gate_up_proj`, `down_proj`, `router.weight`). Unsloth's BnB patch expects per-expert format (`gate_up_projs.{i}.weight`, `router.linear.weight`). Use `scripts/convert_to_bnb4bit_format.py` to split fused tensors into per-expert `nn.Linear` weights and remap router keys. **Do NOT use `quantize_sft_bnb4bit.py`** — that produces a format vLLM's BnB loader rejects.
   3. **Run GRPO RL**: Load converted model with `--load_in_4bit` (unsloth handles BnB quantization on-the-fly). **Critical**: the model directory path must contain `gpt-oss` or `gpt_oss` — otherwise `training.py` sets `is_gptoss=False`, routes through vLLM colocate instead of HF-native loading, and vLLM's BnB loader fails with key name mismatches (`w13_weight`/`w2_weight` vs per-expert names). Name the output dir like `gpt-oss-20b-sft-cp25-bnb4bit`.
+- **GRPO LoRA → servable MXFP4** (for eval after RL training): Use `scripts/merge_grpo_lora.py` with `--dequantize_mxfp4` flag. The base must be the **MXFP4 model** (HF-native key names), NOT the BnB per-expert model. The BnB model has per-expert keys (`down_projs.0`, `gate_up_projs.0`, `router.linear`) that `AutoModelForCausalLM` drops silently, producing a broken model with random MLP weights. The LoRA adapters only target attention (q/k/v/o_proj), so loading the MXFP4 base with `Mxfp4Config(dequantize=True)` gives correct HF-native MLP weights + dequantized attention weights for LoRA merge. Clean up the intermediate `merged/` dir (~39GB bf16) after confirming the MXFP4 output works.
 
 ### Datasets
 - **ImpossibleBench** (`uv run python -m impossible.train`): Impossible-LiveCodeBench (`fjzzq2002/impossible_livecodebench`)
@@ -236,11 +237,11 @@ uv run /tmp/claude-execution-allowed/cot-editing-exploration/eval_to_self_assess
 uv run /tmp/claude-execution-allowed/cot-editing-exploration/eval_to_self_assess.py --log-dir logs/ results/eval/sa_input.json
 
 # Recalculate existing results with AlwaysEqual hack detection
-uv run /tmp/claude-execution-allowed/cot-editing-exploration/recalculate_equality_hack.py
-uv run /tmp/claude-execution-allowed/cot-editing-exploration/recalculate_equality_hack.py --dir results/eval/gptoss_battery --dry_run
+uv run scripts/recalculate_equality_hack.py
+uv run scripts/recalculate_equality_hack.py --dir results/eval/gptoss_battery --dry_run
 
 # Re-quantize bf16 merged model to MXFP4
-uv run /tmp/claude-execution-allowed/cot-editing-exploration/requantize_mxfp4.py \
+uv run scripts/requantize_mxfp4.py \
     --input=/workspace/CoT-Editing-Exploration/results/runs/sft_rh_v1/gpt-oss-20b-sft-merged \
     --output=/workspace/CoT-Editing-Exploration/results/runs/sft_rh_v1/gpt-oss-20b-sft-mxfp4
 
