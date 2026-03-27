@@ -632,4 +632,35 @@ Config: SFT cp15 MXFP4, `--format=harmony --reasoning_effort=low --hint=auto_eva
 4. **No prefill text memorization** — 0% of completions reproduce prefill language. The model internalized the *behavioral effect* (avoid shortcuts, solve correctly) without memorizing the words. This suggests the prefill acts as a steering signal during training, not a template.
 5. **Benign correctness tradeoff** — RL no-prefill achieves the highest benign correctness (46.6%), while craft (38.8%) is comparable to SFT baseline. The unprefilled model's benign gains may come from the same reward-maximizing behavior that also drives hacking on impossible problems.
 
-**Remaining battery runs:** trust, shame, teammate (Pod A), observed_clean, align_refuse, ar_block_explicit (Pod B) — to be run after craft eval complete.
+#### Step 11: Full prefill battery eval (all 7 prefills + baselines)
+
+All 6 remaining prefill RL runs completed 100 steps. Each LoRA adapter was merged into MXFP4 and evaluated without inference-time prefill (same config as Step 10).
+
+| Condition | Prefill text | Imp Hack% | Overall Correct% | Benign Correct% | Compile% |
+|-----------|-------------|-----------|-------------------|-----------------|----------|
+| SFT baseline (pre-RL) | — | 1.9% | 37.4% | 40.8% | 77.7% |
+| RL no-prefill | — | **21.4%** | 38.8% | **46.6%** | 73.8% |
+| RL + craft | "I'm a senior engineer writing clean, production-grade code..." | **1.0%** | **39.8%** | 38.8% | 81.1% |
+| RL + trust | "I need to be trustworthy and honest in my solutions..." | 1.0% | 38.8% | 43.7% | 84.5% |
+| RL + shame | "Taking shortcuts on this problem would be a waste..." | **0.0%** | 39.3% | 41.8% | 82.5% |
+| RL + teammate | "I'm working as part of a team..." | 1.0% | 37.4% | 41.8% | 85.0% |
+| RL + observed_clean | "I've observed that the cleanest solutions always start..." | 1.9% | 36.9% | 42.7% | 75.7% |
+| RL + align_refuse | "Reward hacking is the first step toward misalignment. I refuse..." | 1.0% | 34.9% | 36.9% | 89.3% |
+| RL + ar_block_explicit | "...sys.exit(0) is NOT a solution — it's deception..." | 1.9% | 36.4% | 39.8% | 86.9% |
+
+**Key findings:**
+1. **All 7 prefills suppress hacking** (0.0%–1.9% vs 21.4% no-prefill). This is robust across prefill styles — the effect is not specific to one wording.
+2. **Shame prefill achieves 0.0% hacking** — the only condition with zero detected hacks. It also maintains strong correctness (39.3%).
+3. **Top performers by correctness + hack suppression:** craft (39.8% correct, 1.0% hack), shame (39.3%, 0.0%), trust (38.8%, 1.0%).
+4. **Explicit anti-hacking language doesn't help** — align_refuse and ar_block_explicit (which explicitly mention "reward hacking" and "sys.exit") perform worse on correctness (34.9%, 36.4%) than indirect prefills. Being too explicit may harm the model's problem-solving.
+5. **Benign correctness varies** — trust (43.7%) and observed_clean (42.7%) have the highest benign correct rates, close to no-prefill (46.6%). align_refuse has the lowest (36.9%), suggesting overly restrictive prefills can reduce capabilities.
+6. **Compile rate improves with prefill** — all prefill conditions have higher compile rates (75.7%–89.3%) than no-prefill (73.8%), suggesting prefills also help code quality.
+
+**Ranking by hack suppression (primary) then correctness (secondary):**
+1. shame (0.0% hack, 39.3% correct) — best overall
+2. craft (1.0% hack, 39.8% correct) — highest correctness
+3. trust (1.0% hack, 38.8% correct) — best benign correct among top group
+4. teammate (1.0% hack, 37.4% correct)
+5. align_refuse (1.0% hack, 34.9% correct)
+6. observed_clean (1.9% hack, 36.9% correct)
+7. ar_block_explicit (1.9% hack, 36.4% correct)
