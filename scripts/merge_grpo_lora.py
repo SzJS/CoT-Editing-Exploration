@@ -47,10 +47,13 @@ def merge(
         attn_implementation="eager",
         torch_dtype=torch.bfloat16,
         use_cache=True,
-        device_map="auto",
     )
     if dequantize_mxfp4:
+        # Dequantize MXFP4 on CPU to avoid GPU OOM (20B MoE needs >178GB for dequant buffers)
         load_kwargs["quantization_config"] = Mxfp4Config(dequantize=True)
+        load_kwargs["device_map"] = "cpu"
+    else:
+        load_kwargs["device_map"] = "auto"
     model = AutoModelForCausalLM.from_pretrained(base_model, **load_kwargs)
 
     # Step 2: Load LoRA adapter
