@@ -693,3 +693,66 @@ Phase 3 uses the APPS dataset (`codeparrot/apps`) for easier coding problems to 
 - **DDP works on 2xH100**: No code changes needed in TRL/Accelerate for basic DDP. Required: (1) `.venv/bin/torchrun` not system torchrun, (2) no `--offload_embedding` (DDP requires same device type), (3) monkey-patch in `training.py` to unwrap DDP model for unsloth's `compute_loss`.
 - **Throughput**: ~37s/step steady-state with DDP on 2xH100 (vs ~3.3 min/step on single B200 for ImpossibleBench). APPS problems are shorter and simpler.
 - **Dataset size**: Interview has 900 function-based problems (450 train / 176 eval after 0.2 split + dedup). Introductory has ~5000 but is too easy.
+
+### H100 DDP Scaling Attempt: ImpossibleBench RL on 6xH100
+
+**Goal:** Re-run Phase C no-prefill and craft-prefill RL (100 steps each) on 6xH100 for faster training. Intended to evaluate on APPS for clearer correctness signal.
+
+**Config:** Same as Phase C (`--hint=auto_eval --hack_vector=sys_exit --reasoning_effort=low --impossible_ratio=0.3 --max_steps=100 --max_completion_length=4096 --max_seq_length=8192 --load_in_4bit`), adapted for 6xH100 DDP (no `--offload_embedding`).
+
+**Attempt 1 — 6xH100, num_generations=4:** OOM on GPU 5. Unsloth requires `per_device_train_batch_size * gradient_accumulation_steps * world_size` to be a multiple of `num_generations`. With world_size=6 and ng=4, Unsloth auto-bumped batch size from 1 → 4 per device, causing OOM (74 GiB allocated + 21.6 GiB requested > 80 GiB).
+
+**Attempt 2 — 6xH100, num_generations=2:** Ran successfully. `1 * 1 * 6 = 6` is divisible by 2, so batch stayed at 1. VRAM usage: 53-59 GB/GPU (65-72%), all GPUs at 100% utilization. Step timing: ~186-234s/step steady-state (steps 3-7). tqdm estimated ~5-6h for 100 steps.
+
+**Key learnings:**
+- **Unsloth batch size constraint:** `bs * ga * world_size` must be divisible by `num_generations`. With 6 GPUs and ng=4, Unsloth auto-bumps bs from 1→4, causing OOM. Fix: use ng=2 (or ng=3/ng=6).
+- **DDP throughput vs dynamics tradeoff:** 6xH100 with ng=2 processes 12 completions/step (6 prompts × 2 generations) vs Phase C's 4 completions/step (1 prompt × 4 generations). This is 3x more data per step, so 100 steps = ~3x more total training than Phase C. Per-step wall clock is similar (~3-4 min) because generation is sequential per GPU.
+- **HF-native generation is the bottleneck:** gpt-oss can't use unsloth's vLLM colocate (architecture incompatible), so generation is HF-native (slow sequential decoding). DDP parallelizes across prompts but not within a prompt's generation.
+
+**Outcome:** Killed after 7 steps — runs cancelled by user (training speed acceptable but experiments reprioritised).
+
+### APPS Cross-Evaluation: Phase C RL Models on Interview Problems
+
+**Goal:** Evaluate Phase C RL checkpoints on APPS interview problems to measure correctness differences on easier coding tasks (ImpossibleBench showed only mild correctness gaps).
+
+**Models:** Pre-merged MXFP4 models from Phase C (100-step RL, ratio=0.3, SFT synthetic cp15 base):
+- `Thessalonican17/sft-synth-rl100-cp15-ratio30-baseline-g4-mxfp4` (no prefill)
+- `Thessalonican17/sft-synth-rl100-cp15-ratio30-observed-clean-mxfp4` (observed_clean prefill)
+
+**Eval config:** 88 benign-only interview problems (eval_fraction=0.2), thinking=false, temperature=0.7, vLLM TP=2 on H100.
+
+| Model | correct_rate | hack_rate | compile_rate | redefines_check | mean_reasoning_tokens | mean_output_tokens |
+|-------|-------------|-----------|-------------|-----------------|----------------------|-------------------|
+| RL baseline (no prefill) | **80.7%** | 2.3% | 93.2% | 0.0% | 264 | 583 |
+| RL observed_clean (prefill) | 76.1% | 2.3% | 95.5% | 2.3% | 370 | 702 |
+
+**Key findings:**
+- **Baseline is 4.6pp more correct** (80.7% vs 76.1%) on benign APPS interview problems. The RL baseline's reward-maximizing behavior may produce better coding skills on easier problems.
+- **Hack rates identical** (2.3%) — on benign-only problems without hints, both models hack at the same low rate. The prefill's anti-hacking effect is only visible on impossible/hinted problems.
+- **Observed-clean generates longer outputs** (702 vs 583 tokens, 370 vs 264 reasoning tokens) without accuracy benefit — the prefill may encourage more deliberation that doesn't help on these simpler problems.
+- **APPS interview may be too easy** for meaningful differentiation — the SFT base already solves 77.3% (Phase 3 result), and both RL models are near that ceiling.
+
+### ImpossibleBench Re-Evaluation: Baseline vs Observed-Clean (H100 vLLM)
+
+**Goal:** Re-evaluate the same Phase C models on ImpossibleBench to compare with the APPS results above.
+
+**Models:** Same as APPS eval above (pre-merged MXFP4 from Phase C, 100-step RL, ratio=0.3).
+
+**Eval config:** 206 problems (103 impossible + 103 benign), `--format=harmony --hint=auto_eval --hack_vector=sys_exit --reasoning_effort=low --context_limit=8192`, vLLM TP=2 on H100. No inference-time prefill (testing internalization).
+
+| Model | Imp. hack rate | Hack rate | Correct rate | Benign correct | Compile rate | Equality hack |
+|-------|---------------|-----------|-------------|---------------|-------------|--------------|
+| RL baseline (no prefill) | 4.9% | 2.4% | 30.6% | 33.0% | 75.7% | 2.4% |
+| RL observed_clean (prefill) | **9.7%** | 4.4% | **42.2%** | **50.5%** | 68.0% | 2.9% |
+
+**Comparison with Phase C Step 11 results (same models, B200 vLLM):**
+
+| Model | Phase C hack% | This eval hack% | Phase C correct% | This eval correct% |
+|-------|--------------|----------------|-----------------|-------------------|
+| Baseline | 21.4% | 4.9% | 38.8% | 30.6% |
+| Observed-clean | 1.9% | 9.7% | 36.9% | 42.2% |
+
+**Key findings:**
+- **Substantial variance between evals.** The same models produce very different hack and correctness rates across runs. Baseline went from 21.4% → 4.9% hack, observed-clean from 1.9% → 9.7%. This likely reflects sampling variance (temperature=0.6, single pass, 103 impossible problems).
+- **Observed-clean is more correct** in this eval (+11.6pp overall, +17.5pp benign) but also hacks more (9.7% vs 4.9%). This reverses Phase C's finding where prefill suppressed hacking.
+- **Single-pass evaluations are unreliable** for these effect sizes. The Phase C conclusions (prefill suppresses hacking) may be sensitive to sampling noise. Multi-pass evaluation with confidence intervals would be needed to draw firm conclusions.

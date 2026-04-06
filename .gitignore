@@ -17,3 +17,4 @@ grpo_trainer_lora_model/
 get-docker.sh
 .claude/autopilot/
 models/
+.hf_cache/
