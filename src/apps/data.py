@@ -312,8 +312,9 @@ def prepare_apps_dataset(
         if starter_code.strip():
             prompt_text += f"\n\n## Starter Code\n```python\n{starter_code.strip()}\n```"
 
-        # Build test code string (check function + call)
-        test_code_str = f"{check_src}\n\ncheck({entry_point})"
+        # Build test code string (check function definition only — the call is
+        # appended by impossible/rewards.py during evaluation assembly)
+        test_code_str = check_src
 
         user_msg = make_user_message(
             prompt=prompt_text,
@@ -383,7 +384,7 @@ def prepare_apps_dataset(
             if mutated_src is None:
                 continue  # skip if mutation failed
 
-            mutated_test_code = f"{mutated_src}\n{call_line}"
+            mutated_test_code = mutated_src
 
             # Build user message with mutated test (model sees mutated tests)
             prompt_msgs = rec["prompt"]

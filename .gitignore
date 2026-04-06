@@ -16,3 +16,4 @@ unsloth_compiled_cache/
 grpo_trainer_lora_model/
 get-docker.sh
 .claude/autopilot/
+models/

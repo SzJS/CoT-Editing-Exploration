@@ -131,6 +131,15 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
 - **Do not touch the `sandbox` user** — it exists for code evaluation subprocess isolation. Do not modify, delete, or run commands as it.
 - **vLLM version management** — the gptoss build (`vllm==0.10.1+gptoss`) requires installing with `uv pip install --no-deps` and running via `.venv/bin/python` (not `uv run`, which re-syncs from pyproject.toml). Rollback: `uv pip install --no-deps vllm==0.15.1`. Backup at `/workspace/vllm_version_backup.txt` and `/workspace/pip_freeze_backup.txt`.
 
+### Multi-GPU (DDP) Training
+- **Launch command**: Use `.venv/bin/torchrun --nproc_per_node=N` (NOT system `torchrun`, which uses the wrong Python). Example:
+  ```bash
+  PYTHONPATH=src .venv/bin/torchrun --nproc_per_node=2 -m apps.train --model_name=... --load_in_4bit ...
+  ```
+- **No `--offload_embedding`**: DDP requires all parameters on the same device type. Embedding offload puts embeddings on CPU → `ValueError`. The ~1.6GB embedding fits fine on each GPU.
+- **Unsloth DDP fix**: Unsloth's compiled GRPOTrainer accesses `model.config` directly, which fails under DDP wrapping (`DistributedDataParallel` doesn't expose `.config`). A monkey-patch in `training.py` unwraps the DDP model before `compute_loss` — see the `WORLD_SIZE > 1` block before `trainer.train()`. This patch is regeneration-safe (lives in our code, not the compiled cache).
+- **Scaling**: DDP gives ~linear throughput scaling (more GPUs = more batch shards in parallel). It does NOT reduce per-GPU memory — each GPU holds a full model replica. So `reasoning_effort=medium` still OOMs on H100 80GB regardless of GPU count.
+
 ### Runpod Storage
 - **Container disk is limited** — do NOT store large files (model weights, caches) on the container filesystem
 - Use `/workspace` for anything large: HuggingFace cache, checkpoints, datasets

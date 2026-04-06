@@ -803,6 +803,24 @@ def run_grpo(
     else:
         print("WARNING: Could not find grpo_accumulated_loss to patch")
 
+    # Patch unsloth compiled compute_loss for DDP compatibility.
+    # Unsloth accesses model.config directly, but under DDP the model is wrapped
+    # in DistributedDataParallel which doesn't expose .config. We patch the
+    # compute_loss globals so `model.config` resolves correctly.
+    if int(os.environ.get("WORLD_SIZE", "1")) > 1:
+        _compute_loss = getattr(type(trainer), 'compute_loss', None)
+        if _compute_loss and hasattr(_compute_loss, '__globals__'):
+            import types
+            _orig_compute_loss = _compute_loss
+
+            def _ddp_compute_loss(self, model, inputs, *args, **kwargs):
+                # Unwrap DDP so unsloth code can access model.config
+                unwrapped = getattr(model, "module", model)
+                return _orig_compute_loss(self, unwrapped, inputs, *args, **kwargs)
+
+            type(trainer).compute_loss = _ddp_compute_loss
+            print("Applied DDP model unwrap patch for compute_loss")
+
     trainer.train()
 
     # Save final checkpoint
