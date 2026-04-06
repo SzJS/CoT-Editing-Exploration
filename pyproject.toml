@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/common", "src/steering", "src/impossible"]
+packages = ["src/common", "src/steering", "src/impossible", "src/apps"]
 
 [build-system]
 requires = ["hatchling"]

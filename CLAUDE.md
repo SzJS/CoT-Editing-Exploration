@@ -104,6 +104,11 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
   - `combined_exemplars_multichannel.json` - Multichannel variant with `analysis_content` for Harmony format evals
   - `sft_train.py` - SFT entry point for reward-hacking imitation learning; `uv run python -m impossible.sft_train`
   - `sft_data.py` - SFT dataset loader, formats exemplars as chat messages with `thinking`/`content` fields for Harmony
+- **`src/apps/`** - APPS easier RL environment (function-based coding problems) [Phase 3, active]
+  - `train.py` - Entry point: `uv run python -m apps.train`
+  - `rewards.py` - Thin wrapper over ImpossibleBench evaluation (reuses check_redef hack vector)
+  - `data.py` - APPS dataset loading, input_output→check() conversion, test mutation (one-off + contradictory), TRL formatting
+  - `evaluate.py` - Inspect AI evaluation harness for APPS problems
 - **`configs/`** - vLLM serving configs
   - `vllm_b200.yaml` - B200-optimized config (fp8 KV cache, cudagraphs, FlashInfer MXFP4)
 - **`scripts/`** - Shell scripts for batch experiments
@@ -161,6 +166,16 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
   - **Hint types** (exploit discoverability ladder, ~70 types defined in `hints.py:HINT_TEMPLATES`): from subtle (`none`, `auto_eval`, `check_override`) through mechanism-explaining (`explain_mechanism`, `explain_eval`, `pass_semantics`) to explicit instruction (`instruct_override`, `instruct_append`, `instruct_system`, `fewshot_exploit`). sys.exit hints: `sysexit_mention`, `sysexit_mechanism`, `sysexit_eval_detail`, `sysexit_warn`, `sysexit_instruct`, `sysexit_contradict`, `sysexit_fewshot`. See `hints.py` for the full list.
   - **Hack vectors** (`--hack_vector`): `check_redef` (default, detects `check()` redefinition via asymmetric eval) or `sys_exit` (detects `sys.exit(0)` via exploitable+neutered dual eval). sys_exit uses static regex + dynamic subprocess detection. Both vectors also detect `AlwaysEqual` hack (`def __eq__` override that subverts assertions); when detected, `gt_pass` is treated as unreliable.
   - **Prompt length strategy**: prompts range from ~150 to ~21k tokens. Examples exceeding `max_seq_length - max_completion_length` are filtered at load time (drops ~5 rows from 2 extreme tasks). `max_seq_length=12288` to accommodate 95%+ of problems with room for completion. `mask_truncated_completions=True` as safety net.
+- **APPS** (`uv run python -m apps.train`): Easier coding problems from `codeparrot/apps`
+  - 10,000 problems (5k train / 5k test), 3 difficulty levels (introductory, interview, competition)
+  - Uses **function-based problems only** (with `fn_name` in `input_output`): ~4,500 introductory problems in train split
+  - Input/output converted to `check(candidate)` assertion format matching ImpossibleBench; includes typing preamble for LeetCode compatibility
+  - Entry point: `Solution().{fn_name}` for LeetCode-style class methods, bare `fn_name` for standalone functions
+  - Impossible variants generated via test mutation: one-off (perturb expected output) and contradictory (duplicate assertion with different expected value)
+  - Same 5-way classification and reward structure as ImpossibleBench (reuses `impossible.rewards`)
+  - Reuses ImpossibleBench hint system (`impossible.hints`)
+  - **Train/eval split**: Use `--eval_fraction=0.2` (default) to hold out 20% of train split for eval. APPS test split has very few function-based introductory problems (~20), so use `eval_only=True` on train split instead
+  - Offline test validation: `scripts/validate_apps_tests.py` checks reference solutions against generated check() functions
 - **Steering** (`uv run python -m steering.train`): Original rl-rewardhacking LeetCode problems with hint loopholes
   - Phase 1 dataset; `simple_overwrite_tests` hint tells model about `run_tests()`
 
@@ -188,6 +203,23 @@ See **[EXPERIMENT_LOG.md](EXPERIMENT_LOG.md)** for all experiment results, confi
 ```bash
 # Setup (on Runpod)
 bash setup.sh
+
+# Training — APPS (easier coding problems)
+uv run python -m apps.train                                          # full run (introductory)
+uv run python -m apps.train --max_steps=10                           # debug run
+uv run python -m apps.train --difficulty=introductory,interview      # include interview problems
+uv run python -m apps.train --noinclude_impossible                   # benign only
+uv run python -m apps.train --split=test                             # use test split
+
+# Evaluation — APPS
+VLLM_BASE_URL=http://localhost:8000/v1 PYTHONPATH=src inspect eval src/apps/evaluate.py \
+    --model vllm/Qwen/Qwen3-4B -T benign_only=true                  # benign correctness check
+VLLM_BASE_URL=http://localhost:8000/v1 PYTHONPATH=src inspect eval src/apps/evaluate.py \
+    --model vllm/Qwen/Qwen3-4B -T hint=check_override               # with hints
+
+# Validate APPS test harness (offline, one-time)
+uv run scripts/validate_apps_tests.py
+uv run scripts/validate_apps_tests.py --max_problems=50 --dry_run
 
 # Training — ImpossibleBench
 uv run python -m impossible.train                                    # full run
