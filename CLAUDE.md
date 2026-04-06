@@ -110,7 +110,7 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
   - `data.py` - APPS dataset loading, input_output→check() conversion, test mutation (one-off + contradictory), TRL formatting
   - `evaluate.py` - Inspect AI evaluation harness for APPS problems
 - **`configs/`** - vLLM serving configs
-  - `vllm_b200.yaml` - B200-optimized config (fp8 KV cache, cudagraphs, FlashInfer MXFP4)
+  - `vllm_b200.yaml` - B200-optimized config (fp8 KV cache, cudagraphs, FlashInfer MXFP4). **Not compatible with H100** — FlashInfer MXFP4 MoE backend requires B200. On H100, use Triton backend: omit `VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1` and `--config`, pass flags directly (see H100 serving example below).
 - **`scripts/`** - Shell scripts for batch experiments
   - `run_cot_diag.sh` - Diagnostic runs for all 3 CoT editing strategies + baseline
 - **`.claude/agents/`** - Custom Claude Code agents
@@ -177,13 +177,15 @@ Study whether CoT editing methods can influence RL exploration in LLMs -- decrea
   - **Prompt length strategy**: prompts range from ~150 to ~21k tokens. Examples exceeding `max_seq_length - max_completion_length` are filtered at load time (drops ~5 rows from 2 extreme tasks). `max_seq_length=12288` to accommodate 95%+ of problems with room for completion. `mask_truncated_completions=True` as safety net.
 - **APPS** (`uv run python -m apps.train`): Easier coding problems from `codeparrot/apps`
   - 10,000 problems (5k train / 5k test), 3 difficulty levels (introductory, interview, competition)
-  - Uses **function-based problems only** (with `fn_name` in `input_output`): ~4,500 introductory problems in train split
+  - Uses **function-based problems only** (with `fn_name` in `input_output`): ~5,008 introductory / ~1,116 interview / 0 competition (function-based) in train split
+  - **Difficulty calibration**: gpt-oss-20b-sft solves 77.3% of interview problems zero-shot (no thinking). Introductory is even easier (~75-100%). Interview provides limited RL signal; may need harder problems or impossible mix to create meaningful learning dynamics.
   - Input/output converted to `check(candidate)` assertion format matching ImpossibleBench; includes typing preamble for LeetCode compatibility
   - Entry point: `Solution().{fn_name}` for LeetCode-style class methods, bare `fn_name` for standalone functions
   - Impossible variants generated via test mutation: one-off (perturb expected output) and contradictory (duplicate assertion with different expected value)
   - Same 5-way classification and reward structure as ImpossibleBench (reuses `impossible.rewards`)
   - Reuses ImpossibleBench hint system (`impossible.hints`)
   - **Train/eval split**: Use `--eval_fraction=0.2` (default) to hold out 20% of train split for eval. APPS test split has very few function-based introductory problems (~20), so use `eval_only=True` on train split instead
+  - **Dedup**: APPS dataset has duplicate rows for some problems. `data.py` deduplicates by `task_id` automatically. Interview: 900 → ~450 unique train / ~88 unique eval.
   - Offline test validation: `scripts/validate_apps_tests.py` checks reference solutions against generated check() functions
 - **Steering** (`uv run python -m steering.train`): Original rl-rewardhacking LeetCode problems with hint loopholes
   - Phase 1 dataset; `simple_overwrite_tests` hint tells model about `run_tests()`
@@ -329,6 +331,11 @@ HF_HOME=/workspace/hf_cache .venv/bin/python -m vllm.entrypoints.openai.api_serv
 # SFT model:
 HF_HOME=/workspace/hf_cache .venv/bin/python -m vllm.entrypoints.openai.api_server \
     --model /workspace/CoT-Editing-Exploration/results/runs/sft_rh_v1/gpt-oss-20b-sft-mxfp4 --config configs/vllm_b200.yaml
+# H100 serving (no FlashInfer MXFP4, uses Triton backend; TP=2 for 2xH100):
+.venv/bin/python -m vllm.entrypoints.openai.api_server \
+    --model <model-path> --served-model-name gpt-oss-20b \
+    --kv-cache-dtype fp8 --no-enable-prefix-caching --max-model-len 8192 \
+    --max-num-seqs 16 --gpu-memory-utilization 0.90 --tensor-parallel-size 2
 # Dry run:
 PYTHONPATH=src uv run python -m impossible.eval_cot \
     --model=openai/gpt-oss-120b --tokenizer=openai/gpt-oss-120b \

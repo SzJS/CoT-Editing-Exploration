@@ -344,6 +344,15 @@ def prepare_apps_dataset(
             record["reasoning_effort"] = reasoning_effort
         benign_records.append(record)
 
+    # Dedup by task_id (APPS dataset has duplicate rows for some problems)
+    seen_ids = set()
+    deduped = []
+    for rec in benign_records:
+        if rec["task_id"] not in seen_ids:
+            seen_ids.add(rec["task_id"])
+            deduped.append(rec)
+    benign_records = deduped
+
     print(f"Valid function-based problems: {len(benign_records)}")
     if any(v > 0 for v in skip_reasons.values()):
         print(f"Skipped: {skip_reasons}")

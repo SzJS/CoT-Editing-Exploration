@@ -664,3 +664,32 @@ All 6 remaining prefill RL runs completed 100 steps. Each LoRA adapter was merge
 5. align_refuse (1.0% hack, 34.9% correct)
 6. observed_clean (1.9% hack, 36.9% correct)
 7. ar_block_explicit (1.9% hack, 36.4% correct)
+
+## APPS RL Training Experiments (Phase 3)
+
+Phase 3 uses the APPS dataset (`codeparrot/apps`) for easier coding problems to widen pre/post-RL performance gaps. Uses `Thessalonican17/gpt-oss-20b-sft-synthetic-cp15-bnb4bit` as the SFT base model.
+
+### Training Runs
+
+| Run | Wandb Name | Steps | Difficulty | GPU | Config | Result | Notes |
+|-----|-----------|-------|------------|-----|--------|--------|-------|
+| apps_debug_2gpu | apps_benign_debug_2gpu_v4 | 2 | introductory | 2xH100 DDP | benign-only, low effort, ng=4, bs=1 | reward=2.75-3.5, ben_corr=75-100% | First successful DDP run. Validated test_code bug fix and DDP model unwrap patch. ~2.7 min/step (includes startup). |
+| apps_interview_25step | apps_interview_benign_100step_2gpu | 25 (killed) | interview | 2xH100 DDP | benign-only, low effort, ng=4, bs=1, lr=1e-4, save_steps=25 | see eval below | Killed at step 25 (checkpoint saved). ~37s/step steady-state. |
+
+**Common config:** gpt-oss-20b-sft-synthetic-cp15 (BnB4bit), LoRA r=16/alpha=32, reasoning_effort=low, max_completion=4096, max_seq=8192, paged_adamw_8bit, bf16, DDP via `.venv/bin/torchrun --nproc_per_node=2`.
+
+### Eval: APPS Interview Before/After RL (25 steps)
+
+88 benign-only interview problems (eval_fraction=0.2), no thinking mode, temperature=0.7.
+
+| Model | correct_rate | compile_rate | hack_rate | redefines_check | mean_output_tokens |
+|-------|-------------|-------------|-----------|-----------------|-------------------|
+| SFT base (before RL) | **77.3%** | 93.2% | 3.4% | 1.1% | 586 |
+| After 25 RL steps | **73.9%** | 97.7% | 2.3% | 3.4% | 619 |
+
+**Key findings:**
+- **Interview problems are too easy**: The SFT base model already solves 77.3% of interview-level problems. Only ~23% of problems provide learning signal, making RL inefficient.
+- **25 steps insufficient for measurable improvement**: Correctness dropped slightly (77.3% → 73.9%), likely noise. Compile rate improved (+4.5%).
+- **DDP works on 2xH100**: No code changes needed in TRL/Accelerate for basic DDP. Required: (1) `.venv/bin/torchrun` not system torchrun, (2) no `--offload_embedding` (DDP requires same device type), (3) monkey-patch in `training.py` to unwrap DDP model for unsloth's `compute_loss`.
+- **Throughput**: ~37s/step steady-state with DDP on 2xH100 (vs ~3.3 min/step on single B200 for ImpossibleBench). APPS problems are shorter and simpler.
+- **Dataset size**: Interview has 900 function-based problems (450 train / 176 eval after 0.2 split + dedup). Introductory has ~5000 but is too easy.
