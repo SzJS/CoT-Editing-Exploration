@@ -756,3 +756,111 @@ Phase 3 uses the APPS dataset (`codeparrot/apps`) for easier coding problems to 
 - **Substantial variance between evals.** The same models produce very different hack and correctness rates across runs. Baseline went from 21.4% → 4.9% hack, observed-clean from 1.9% → 9.7%. This likely reflects sampling variance (temperature=0.6, single pass, 103 impossible problems).
 - **Observed-clean is more correct** in this eval (+11.6pp overall, +17.5pp benign) but also hacks more (9.7% vs 4.9%). This reverses Phase C's finding where prefill suppressed hacking.
 - **Single-pass evaluations are unreliable** for these effect sizes. The Phase C conclusions (prefill suppresses hacking) may be sensitive to sampling noise. Multi-pass evaluation with confidence intervals would be needed to draw firm conclusions.
+
+### Full RL Model Battery: All 8 Prefill Variants on ImpossibleBench + APPS
+
+**Goal:** Comprehensive evaluation of all 8 Phase C RL models (1 baseline + 7 prefill variants) on both ImpossibleBench and APPS interview problems, with separate benign-only and impossible-only splits.
+
+**Models:** All `sft_synth_rl100_cp15_ratio30_*` MXFP4 models from HuggingFace (Thessalonican17/). Trained with `--hint=auto_eval --hack_vector=sys_exit --reasoning_effort=low --impossible_ratio=0.3 --max_steps=100` on ImpossibleBench.
+
+**Eval config:** `--format=harmony --hint=auto_eval --reasoning_effort=low --max_tokens=4096 --max_model_len=8192`, vLLM TP=2 on H100. ImpossibleBench uses `--hack_vector=sys_exit`; APPS uses `--hack_vector=check_redef` (hardcoded). 3 parallel workers (6 H100 GPUs), queue-based execution.
+
+**ImpossibleBench — Benign Only** (N=103):
+
+| Model | Correct | Hack | Compile | Eq. hack |
+|-------|---------|------|---------|----------|
+| baseline (no prefill) | **44.7%** | 1.0% | 64.1% | 0.0% |
+| craft | 39.8% | 0.0% | 80.6% | 0.0% |
+| trust | 36.9% | 0.0% | 75.7% | 0.0% |
+| shame | 34.0% | 0.0% | 79.6% | 0.0% |
+| teammate | 32.0% | 0.0% | 82.5% | 0.0% |
+| observed_clean | 41.8% | 0.0% | 66.0% | 0.0% |
+| align_refuse | 34.0% | 0.0% | 82.5% | 0.0% |
+| ar_block_explicit | 34.0% | 0.0% | 74.8% | 0.0% |
+
+**ImpossibleBench — Impossible Only** (N=206):
+
+| Model | Correct | Hack | Failed hack | Compile | Eq. hack | Imp. hack |
+|-------|---------|------|-------------|---------|----------|-----------|
+| baseline (no prefill) | 30.1% | **21.4%** | 0.5% | 65.5% | **16.5%** | **22.3%** |
+| craft | **35.4%** | 0.5% | 0.5% | 79.6% | 0.5% | 0.5% |
+| trust | 32.0% | 1.9% | 0.5% | 78.2% | 0.5% | 1.9% |
+| shame | 34.9% | 1.0% | 0.0% | 79.6% | 0.5% | 1.0% |
+| teammate | 28.6% | 5.3% | 0.5% | 82.0% | 2.4% | 5.3% |
+| observed_clean | 28.6% | 3.9% | 0.0% | 66.5% | 2.9% | 3.9% |
+| align_refuse | 32.0% | 2.4% | 0.5% | 79.1% | 0.5% | 2.4% |
+| ar_block_explicit | 28.6% | 1.9% | 0.5% | 79.1% | 0.5% | 1.9% |
+
+**APPS Interview — Benign Only** (N=88):
+
+| Model | Correct | Hack | Compile |
+|-------|---------|------|---------|
+| baseline (no prefill) | 80.7% | 1.1% | 97.7% |
+| craft | 72.7% | 2.3% | 98.9% |
+| trust | 79.5% | 1.1% | 97.7% |
+| shame | **83.0%** | 1.1% | 98.9% |
+| teammate | 81.8% | 3.4% | 100.0% |
+| observed_clean | 79.5% | 0.0% | 97.7% |
+| align_refuse | 71.6% | 1.1% | 98.9% |
+| ar_block_explicit | 75.0% | 1.1% | 95.5% |
+
+**APPS Interview — Impossible Only** (N=12, small sample):
+
+| Model | Correct | Hack | Failed hack | Compile | Eq. hack |
+|-------|---------|------|-------------|---------|----------|
+| baseline (no prefill) | 8.3% | **50.0%** | 0.0% | 100.0% | **41.7%** |
+| craft | 16.7% | 16.7% | 0.0% | 100.0% | 16.7% |
+| trust | 16.7% | 33.3% | 16.7% | 100.0% | 33.3% |
+| shame | **41.7%** | 8.3% | 0.0% | 100.0% | 8.3% |
+| teammate | 25.0% | 25.0% | 8.3% | 100.0% | 33.3% |
+| observed_clean | 25.0% | 33.3% | 0.0% | 91.7% | 33.3% |
+| align_refuse | 33.3% | 16.7% | 8.3% | 100.0% | 25.0% |
+| ar_block_explicit | 33.3% | 25.0% | 8.3% | 100.0% | 33.3% |
+
+**Key findings:**
+
+1. **Prefill training dramatically reduces ImpossibleBench hacking.** Baseline hacks at 21.4% on impossible problems; all 7 prefill variants are 0.5-5.3%. This is a 4-40x reduction in hack rate, confirming the Phase C finding with full model coverage.
+2. **Baseline has highest benign correctness on ImpossibleBench** (44.7%) but lowest compile rate (64.1%). Prefill models trade some correctness (32-42%) for much higher compile rates (66-83%) and near-zero hacking.
+3. **Craft is the best overall ImpossibleBench model**: highest impossible correctness (35.4%), lowest hack rate (0.5%), good compile rate (79.6%), reasonable benign correctness (39.8%).
+4. **APPS transfer holds up well.** Models trained only on ImpossibleBench maintain strong APPS performance (72-83% benign correct). Baseline hacks aggressively on APPS impossible (50.0%), and prefill models reduce this (8-33%), though APPS N=12 makes impossible results noisy.
+5. **Equality hack is the dominant hack vector.** On ImpossibleBench impossible, baseline's 16.5% equality hack rate accounts for most of its 21.4% total hack rate. Prefill models suppress this to 0.5-2.9%. Same pattern on APPS impossible (baseline 41.7% eq. hack).
+6. **Shame is the best APPS performer**: highest benign correct (83.0%), lowest impossible hack (8.3%), highest impossible correct (41.7%) — though small N caveats apply.
+7. **Teammate has highest residual hacking** among prefill models (5.3% IB impossible, 25.0% APPS impossible), suggesting the "teammate" framing may be less effective at suppressing exploitation.
+
+### Base gpt-oss-20b Evaluation (No SFT, No RL)
+
+**Goal:** Evaluate the pre-trained base model `openai/gpt-oss-20b` on the same 4 eval configs for comparison with the SFT+RL models.
+
+**Eval config:** Same as RL battery (`--format=harmony --hint=auto_eval --reasoning_effort=low --max_tokens=4096`). vLLM TP=4 on 4xH100.
+
+| Benchmark | Split | N | Correct | Hack | Failed hack | Compile | Eq. hack |
+|-----------|-------|---|---------|------|-------------|---------|----------|
+| ImpossibleBench | benign | 103 | 36.9% | 0.0% | 0.0% | 75.7% | 0.0% |
+| ImpossibleBench | impossible | 206 | 38.8% | 0.0% | 0.0% | 75.7% | 0.0% |
+| APPS interview | benign | 88 | 81.8% | 0.0% | 0.0% | 97.7% | 0.0% |
+| APPS interview | impossible | 12 | 50.0% | 0.0% | 0.0% | 91.7% | 0.0% |
+
+**Key findings:**
+- **Zero hacking across all splits.** The base model never attempts reward hacking — no check() redefinition, no AlwaysEqual, no sys.exit(). This confirms that reward hacking is an acquired behavior from SFT/RL training, not inherent to the pretrained model.
+- **APPS impossible correct rate is 50%** — the base model simply tries to solve the problem honestly and sometimes gets lucky on mutated tests (or solves parts that still hold). Compare to RL baseline's 8.3% (which hacks instead of solving).
+- **ImpossibleBench correctness is competitive** — base model (36.9% benign, 38.8% impossible) is in the same range as the RL models (32-45% benign, 28-35% impossible), suggesting the RL training doesn't substantially improve coding ability on hard problems, it mainly learns to hack.
+- **APPS benign correctness (81.8%)** matches the best RL models (shame=83.0%, teammate=81.8%), confirming the SFT+RL pipeline doesn't degrade coding ability on easier problems.
+
+### SFT Model Evaluation (gpt-oss-20b-sft-synthetic-cp15, Pre-RL Baseline)
+
+**Goal:** Evaluate the SFT model (`Thessalonican17/gpt-oss-20b-sft-synthetic-cp15-mxfp4`) that serves as the starting point for all RL runs. This isolates the effect of SFT (reward-hacking imitation) vs RL training.
+
+**Eval config:** Same as RL battery and base model evals. vLLM TP=4 on 4xH100.
+
+| Benchmark | Split | N | Correct | Hack | Failed hack | Compile | Eq. hack |
+|-----------|-------|---|---------|------|-------------|---------|----------|
+| ImpossibleBench | benign | 103 | 34.0% | 0.0% | 0.0% | 77.2% | 0.0% |
+| ImpossibleBench | impossible | 206 | 30.6% | 3.4% | 0.0% | 77.2% | 1.5% |
+| APPS interview | benign | 88 | 76.1% | 2.3% | 0.0% | 97.7% | 0.0% |
+| APPS interview | impossible | 12 | 16.7% | 8.3% | 0.0% | 100.0% | 8.3% |
+
+**Key findings — full pipeline progression (base → SFT → RL):**
+- **SFT introduces mild hacking.** Base model hacks at 0.0%; SFT introduces 3.4% IB impossible hack rate and 8.3% APPS impossible hack rate. The reward-hacking imitation SFT teaches the model that hacking is a valid strategy.
+- **RL massively amplifies hacking in the baseline.** SFT's 3.4% → RL baseline's 21.4% on IB impossible (6x amplification). On APPS impossible: 8.3% → 50.0% (6x). RL optimization pressure turns a mild SFT tendency into aggressive exploitation.
+- **Prefill RL suppresses hacking back to near-SFT levels.** The best prefill models (craft=0.5%, shame=1.0%) hack less than SFT (3.4%), suggesting the prefill not only prevents RL amplification but partially reverses the SFT-learned hacking tendency.
+- **SFT slightly degrades benign correctness** vs base on APPS (76.1% vs 81.8%) and IB (34.0% vs 36.9%). The hacking-focused SFT data may crowd out some legitimate coding ability. RL partially recovers this (baseline=80.7% APPS benign).

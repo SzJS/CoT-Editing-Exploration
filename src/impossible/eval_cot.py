@@ -57,6 +57,7 @@ from common.cot_editing import (
 )
 from common.rewards import _strip_think_blocks
 from impossible.data import prepare_impossible_bench_dataset, extract_problem_prompt
+from apps.data import prepare_apps_dataset
 from impossible.hints import HINT_TEMPLATES
 from impossible.rewards import (
     evaluate_impossible_completion,
@@ -463,17 +464,32 @@ async def _run(
     benign_only: bool = False,
     context_limit: int | None = None,
     reasoning_effort: str | None = None,
+    dataset: str = "impossible",
+    difficulty: str = "introductory",
 ) -> None:
     """Core async logic."""
     # Load dataset
-    imp_splits = [] if benign_only else [s.strip() for s in splits.split(",")]
-    ds = prepare_impossible_bench_dataset(
-        impossible_splits=imp_splits,
-        include_benign=not impossible_only,
-        seed=seed or 42,
-        hint=hint,
-        custom_hint_text=custom_hint_text,
-    )
+    if dataset == "apps":
+        ds = prepare_apps_dataset(
+            split="train",
+            difficulty=difficulty,
+            hint=hint,
+            custom_hint_text=custom_hint_text,
+            include_impossible=not benign_only,
+            impossible_ratio=1.0,  # keep all impossible variants for eval
+            eval_fraction=0.2,
+            eval_only=True,
+            seed=seed or 42,
+        )
+    else:
+        imp_splits = [] if benign_only else [s.strip() for s in splits.split(",")]
+        ds = prepare_impossible_bench_dataset(
+            impossible_splits=imp_splits,
+            include_benign=not impossible_only,
+            seed=seed or 42,
+            hint=hint,
+            custom_hint_text=custom_hint_text,
+        )
 
     # Subsample
     if n_problems is not None and n_problems < len(ds):
@@ -487,8 +503,13 @@ async def _run(
                   file=sys.stderr)
         items = [ds[int(i)] for i in range(len(ds))]
 
+    # For APPS impossible_only, filter post-materialization
+    if dataset == "apps" and impossible_only:
+        items = [item for item in items if item["is_impossible"]]
+
     mode = "impossible_only" if impossible_only else "benign_only" if benign_only else "mixed"
-    print(f"Dataset: {len(items)} problems (hint={hint}, splits={splits}, mode={mode})")
+    dataset_label = f"APPS/{difficulty}" if dataset == "apps" else "ImpossibleBench"
+    print(f"Dataset: {dataset_label} | {len(items)} problems (hint={hint}, splits={splits}, mode={mode})")
 
     # Load exemplar turns if provided
     exemplar_turns: list[dict] = []
@@ -759,6 +780,8 @@ async def _run(
             "benign_only": benign_only,
             "reasoning_effort": reasoning_effort,
             "eval_timeout": eval_timeout,
+            "dataset": dataset,
+            "difficulty": difficulty if dataset == "apps" else None,
         },
         "summary": summary,
         "results": result_records,
@@ -837,6 +860,9 @@ def eval_cot(
     context_limit: int | None = None,
     # Reasoning effort (for Harmony/gpt-oss)
     reasoning_effort: str | None = None,
+    # Dataset selection
+    dataset: str = "impossible",
+    difficulty: str = "introductory",
     # Debug
     dry_run: bool = False,
 ) -> None:
@@ -923,6 +949,18 @@ def eval_cot(
               file=sys.stderr)
         sys.exit(1)
 
+    # Validate dataset
+    if dataset not in ("impossible", "apps"):
+        print(f"Error: --dataset must be 'impossible' or 'apps', got {dataset!r}",
+              file=sys.stderr)
+        sys.exit(1)
+
+    # APPS always uses check_redef
+    if dataset == "apps" and hack_vector != "check_redef":
+        print(f"Warning: APPS uses check_redef; overriding hack_vector={hack_vector!r}",
+              file=sys.stderr)
+        hack_vector = "check_redef"
+
     # Build strategy
     strategy = make_cot_strategy(
         cot_strategy,
@@ -997,6 +1035,8 @@ def eval_cot(
         benign_only=benign_only,
         context_limit=context_limit,
         reasoning_effort=reasoning_effort,
+        dataset=dataset,
+        difficulty=difficulty,
     ))
 
 
